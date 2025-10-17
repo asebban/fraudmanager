@@ -99,7 +99,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.fraudmanager.Main</mainClass>
+                            <mainClass>ma.s2m.fraudmanager.Main</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
