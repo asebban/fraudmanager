@@ -1,0 +1,12 @@
+package com.fraudmanager.rules
+
+import com.fraudmanager.model.Fact;
+import com.fraudmanager.model.Transaction;
+
+rule "Detect High Transaction Count"
+when
+    $fact: Fact(count > 10)
+    $tx: Transaction(amount > 1000)
+then
+    $tx.setFraud(true);
+end

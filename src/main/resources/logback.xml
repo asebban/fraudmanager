@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="30 seconds">
+
+    <!-- Properties -->
+    <!-- Defaults; override with -DLOG_LEVEL=DEBUG -DAPP_LOG_DIR=C:/path/to/logs -DAPP_NAME=myapp -->
+    <property name="LOG_LEVEL" value="${LOG_LEVEL:-INFO}"/>
+    <property name="APP_LOG_DIR" value="${APP_LOG_DIR:-logs}"/>
+    <property name="APP_NAME" value="${APP_NAME:-fraudmanager}"/>
+
+    <!-- Console Appender -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%replace(%logger){'^(?:.*\\.)?([^.]*)$','$1'} %-5level %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- Rolling File Appender -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${APP_LOG_DIR}/${APP_NAME}.log</file>
+        <append>true</append>
+        <encoder>
+            <pattern>%replace(%logger){'^(?:.*\\.)?([^.]*)$','$1'} %-5level %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- daily rollover -->
+            <fileNamePattern>${APP_LOG_DIR}/${APP_NAME}.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <!-- keep 14 days -->
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- Logger levels for project packages -->
+    <logger name="ma.s2m.fraudmanager" level="DEBUG" additivity="false">
+        <appender-ref ref="FILE"/>
+    </logger>
+
+    <!-- Reduce noise from libraries (tweak as needed) -->
+    <!--logger name="io.lettuce" level="WARN"/>
+    <logger name="org.drools" level="INFO"/>
+    <logger name="org.eclipse.jetty" level="WARN"/-->
+
+    <!-- Root logger -->
+    <!--root level="${LOG_LEVEL}">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="FILE"/>
+    </root-->
+</configuration>
