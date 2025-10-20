@@ -368,12 +368,15 @@ public class FraudProcessor {
         return deltas;
     }
 
-    private Measurment processPipeline(String key, Measurment measurment, Long windowSize, TrxOrAlertEvent event, Long arrivalTime, String correlationId, String subject) {
+    private Measurment processWindowSize(String key, Measurment measurment, Long windowSize, TrxOrAlertEvent event, Long arrivalTime, String correlationId, String subject) {
 
         VRTransactionSummary transaction = event.getTransaction();
         transaction.setTransmissionDateTime(arrivalTime);
         Long startTime = System.currentTimeMillis();
 
+        logger.debug("### [{}] [{}] win={} key={} ProcessWindowSize: Start processing trx {} and logging measurment before processing",
+                correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize), key, transaction.getTransactionNo());
+        logMeasurment(measurment, windowSize, subject, transaction.getTransactionNo());
         if (measurment == null) {
             measurment = createNewMeasument(key, subject, windowSize);
         }
@@ -677,7 +680,7 @@ public class FraudProcessor {
             long retrieveEnd = System.currentTimeMillis();
             logger.debug("### [{}] [{}] [Thread : {}] win={} key={} ProcessFunction: Retrieving state took {} ms", correlationId, subject, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, (retrieveEnd - retrieveBegin));
 
-            measurment = processPipeline(key, measurment, ruleWindowSize, cardEvent, arrivalTime, correlationId, Subject.CARD);
+            measurment = processWindowSize(key, measurment, ruleWindowSize, cardEvent, arrivalTime, correlationId, Subject.CARD);
 
             alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
             measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
@@ -715,5 +718,13 @@ public class FraudProcessor {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    private void logMeasurment(Measurment m, Long windowSize, String subject, String trxNo) {
+        if (m == null) {
+            logger.debug("Measurment is null for trx {} subject {} window {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize));
+            return;
+        }
+        logger.debug("Measurment for trx {} subject {} window {}: {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize), m.toString());
     }
 }

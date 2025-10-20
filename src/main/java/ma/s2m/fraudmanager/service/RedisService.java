@@ -13,7 +13,9 @@ import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class RedisService {
@@ -146,6 +148,32 @@ public class RedisService {
             logger.error("Error releasing lock for key: {}", lockKey, e);
             return false;
         }
+    }
+
+    /**
+     * Supprime une clé spécifique dans Redis
+     * @param key La clé à supprimer
+     */
+    public void deleteKey(String key) {
+        RetryUtil.retry(() -> {
+            RedisCommands<String, String> sync = connection.sync();
+            sync.del(key);
+            logger.debug("Deleted key: {}", key);
+        });
+    }
+
+    /**
+     * Récupère les clés correspondant à un pattern donné
+     * @param pattern Le pattern des clés à rechercher
+     * @return Une liste des clés correspondant au pattern
+     */
+    public List<String> getKeysByPattern(String pattern) {
+        return RetryUtil.retry(() -> {
+            RedisCommands<String, String> sync = connection.sync();
+            List<String> keys = new ArrayList<>(sync.keys(pattern));
+            logger.debug("Found {} keys matching pattern: {}", keys.size(), pattern);
+            return keys;
+        });
     }
 
     // Fermeture graceful

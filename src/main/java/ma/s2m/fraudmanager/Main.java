@@ -6,6 +6,7 @@ import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.service.NatsService;
+import ma.s2m.fraudmanager.service.RedisService;
 import ma.s2m.fraudmanager.util.Subject;
 
 import java.util.ArrayList;
@@ -18,7 +19,9 @@ import org.slf4j.LoggerFactory;
 public class Main {
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
-    public static void main(String[] args) {
+    public static void main(String[] args) { 
+        addShutdownHook();
+
         try {
             AppConfig config = new AppConfig();
             init();  // Initialisation des règles avant de démarrer le service NATS
@@ -124,4 +127,30 @@ public class Main {
         RulesConfig.merchantSubjectPresent = !RulesConfig.rulesMapForMerchantSubject.isEmpty();
         RulesConfig.anySubjectPresent = !RulesConfig.rulesMapForAnySubject.isEmpty();
     }
+
+    /**
+     * Ajoute un shutdown hook pour supprimer toutes les clés commençant par "Card:" ou "Merchant"
+     */
+    private static void addShutdownHook() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                if (!AppConfig.appRedisCleanOnShutdown) {
+                    logger.info("Redis cleanup on shutdown is disabled. Skipping cleanup.");
+                    return;
+                }
+                logger.info("Intercepting shutdown signal. Cleaning up Redis keys...");
+                AppConfig config = new AppConfig();
+                RedisService redisService = config.redisService();
+                // Supprimer les clés commençant par "Card:"
+                List<String> keys = redisService.getKeysByPattern("Card:*");
+                if (keys != null) {
+                    keys.forEach(redisService::deleteKey);
+                }
+                logger.info("Redis cleanup completed.");
+            } catch (Exception e) {
+                logger.error("Error during Redis cleanup on shutdown", e);
+            }
+        }));
+    }
+
 }

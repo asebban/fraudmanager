@@ -38,6 +38,7 @@ public class AppConfig {
     public static Boolean droolsProfilerEnabled = false;
     public static Boolean droolsRulesAgendaGroupRuleTypeEnabled = false;
     public static String appProcessorMessagingProvider = "";
+    public static Boolean appRedisCleanOnShutdown = false;
 
     public AppConfig() {
         props = new Properties();
@@ -106,6 +107,10 @@ public class AppConfig {
             appProcessorMessagingProvider = props.getProperty("app.processor.messaging.provider", "NATS");
             if (System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER") != null) {
                 appProcessorMessagingProvider = System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER");
+            }
+            appRedisCleanOnShutdown = Boolean.parseBoolean(props.getProperty("app.redis.clean.on.shutdown", "false"));
+            if (System.getenv("APP_REDIS_CLEAN_ON_SHUTDOWN") != null) {
+                appRedisCleanOnShutdown = Boolean.parseBoolean(System.getenv("APP_REDIS_CLEAN_ON_SHUTDOWN"));
             }
 
         } catch (Exception e) {
