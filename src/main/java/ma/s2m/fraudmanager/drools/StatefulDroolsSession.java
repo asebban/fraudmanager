@@ -68,6 +68,7 @@ final class StatefulDroolsSession implements DroolsSession {
             logger.debug("###### Rules fired in " + (t1 - t0)/1_000_000 + " ms for trx " + (m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A"));
 
             if (droolsProfilerEnabled) {
+                System.out.printf("********** Drools Rule Profiling Report for trx %s and window %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(System.out::println);
             }
             

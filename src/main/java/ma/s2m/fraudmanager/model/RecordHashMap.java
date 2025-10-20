@@ -72,9 +72,9 @@ public class RecordHashMap {
 
     @Override
     public String toString() {
-        String s = null;
+        String s = "";
         for (String key : this.keySet()) {
-            s = key + " : " + this.get(key).toString() + ",";
+            s += key + " : " + this.get(key).toString() + ",";
         }
         return s;
     }

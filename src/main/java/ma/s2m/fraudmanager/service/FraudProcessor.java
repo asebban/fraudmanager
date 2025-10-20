@@ -387,12 +387,13 @@ public class FraudProcessor {
         transaction.setTransmissionDateTime(arrivalTime);
         Long startTime = System.currentTimeMillis();
 
-        logger.debug("### [{}] [{}] win={} key={} ProcessWindowSize: Start processing trx {} and logging measurment before processing",
-                correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize), key, transaction.getTransactionNo());
-        logMeasurment(measurment, windowSize, subject, transaction.getTransactionNo());
         if (measurment == null) {
             measurment = createNewMeasument(key, subject, windowSize);
         }
+
+        logger.debug("### [{}] [{}] win={} key={} ProcessWindowSize: Start processing trx {} and logging measurment before processing",
+                correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize), key, transaction.getTransactionNo());
+        logMeasurment(measurment, windowSize, subject, transaction.getTransactionNo());
 
         int mainSizeBefore = measurment.getTrxEntries().size();
 
@@ -444,6 +445,10 @@ public class FraudProcessor {
             logger.debug("### [{}] [{}] win={} key={} ProcessFunction: Drools execution time for trx {} was {} ms",
                     correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize), key, measurment.getTransaction().getTransactionNo(), (tend - t0) / 1_000_000L);
         }
+
+        logger.debug("### [{}] [{}] win={} key={} ProcessFunction: Logging measurment after processing trx {}",
+                correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize), key, transaction.getTransactionNo());
+        logMeasurment(measurment, windowSize, subject, transaction.getTransactionNo());
 
         // add the transaction in the measurment (in the current window)
         TrxEntry trxEntry = new TrxEntry();
