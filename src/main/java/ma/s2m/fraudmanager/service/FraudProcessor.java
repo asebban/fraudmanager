@@ -2,7 +2,6 @@ package ma.s2m.fraudmanager.service;
 
 import ma.medtech.droolbuilder.messaging.IMessageSender;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
-import ma.medtech.droolbuilder.services.ServiceFactory;
 import ma.medtech.droolbuilder.services.TypeConverter;
 import ma.s2m.auth.Alert;
 import ma.s2m.auth.AlertSet;
@@ -29,6 +28,9 @@ import ma.s2m.serializer.SerializationManager;
 import io.nats.client.Connection;
 import io.nats.client.Message;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -36,6 +38,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -54,22 +57,35 @@ public class FraudProcessor {
     private final Connection natsConnection;
     private final KeyProcessor keyProcessor;
     private final ExecutorService executor = Executors.newFixedThreadPool(4); // Pool pour traitement parallèle
-    private ServiceFactory serviceFactory;
-    @SuppressWarnings("unused")
     private IMessageSender messageSender;
     private DroolsSession session;
 
-    public FraudProcessor(RedisService redisService, Connection natsConnection) {
+    public FraudProcessor(RedisService redisService, Connection natsConnection) throws IOException {
         this.redisService = redisService;
         this.natsConnection = natsConnection;
         this.keyProcessor = new KeyProcessor(redisService);
         initProcessor();
     }
 
-    private void initProcessor() {
-        try {
-            this.serviceFactory = new ServiceFactory("application.properties");
-            this.messageSender = (IMessageSender) this.serviceFactory.getService("app.processor.messaging.provider");
+    @SuppressWarnings("deprecation")
+    private void initProcessor() throws IOException {
+            
+            Properties properties = new Properties();
+            try (InputStream input = getClass().getClassLoader().getResourceAsStream("application.properties")) {
+                if (input == null) {
+                    throw new FileNotFoundException("application.properties file not found in resources directory");
+                }
+                properties.load(input);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            displayAllProperties(properties);
+            try {
+                this.messageSender = (IMessageSender) Class.forName(properties.getProperty("app.processor.messaging.provider", "ma.medtech.droolbuilder.messaging.SysoutMessageSender")).newInstance();
+            } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+                throw new RuntimeException("ServiceFactory: Error while creating message sender", e);
+            }
             
             DroolsSessionFactory factory = new DroolsSessionFactory(RulesConfig.extendedVersion);
 
@@ -87,9 +103,6 @@ public class FraudProcessor {
 
             warmUpDrools(Subject.CARD);
             
-        } catch (Exception e) {
-            e.printStackTrace();
-        }        
     }
 
     private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject) throws Exception {
@@ -726,5 +739,15 @@ public class FraudProcessor {
             return;
         }
         logger.debug("Measurment for trx {} subject {} window {}: {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize), m.toString());
+    }
+
+    /**
+     * Affiche toutes les propriétés disponibles dans l'objet Properties
+     * @param properties L'objet Properties à afficher
+     */
+    private void displayAllProperties(Properties properties) {
+        properties.forEach((key, value) -> {
+            logger.info("################ Property: {} = {}", key, value);
+        });
     }
 }
