@@ -22,6 +22,21 @@ public class RecordHashMap {
         return value;
     }
 
+    /** Lecture SANS création (ne modifie rien) */
+    public MeasurmentRecord peek(String key) {
+        return recordHashMap.get(key);
+    }
+
+    /** Vue non modifiable pour itération sûre */
+    public HashMap<String, MeasurmentRecord> asUnmodifiableMap() {
+        return (HashMap<String, MeasurmentRecord>) java.util.Collections.unmodifiableMap(recordHashMap);
+    }
+
+    /** Snapshot (copie superficielle des entrées) pour itérations à l’abri des mutations */
+    public HashMap<String, MeasurmentRecord> snapshot() {
+        return new HashMap<>(recordHashMap);
+    }
+
     public MeasurmentRecord get(String key) {
         if (recordHashMap.get(key) == null) {
             MeasurmentRecord record = new MeasurmentRecord();

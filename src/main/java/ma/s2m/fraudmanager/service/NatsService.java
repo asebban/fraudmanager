@@ -19,9 +19,13 @@ public class NatsService {
     private final ExecutorService executor;
     private final FraudProcessor processor;
     private final String topic;
-    private final int threadPoolSize; // Ajouté pour stocker la taille du pool
+    private final int threadPoolSize;
 
-    public NatsService(Connection nc, BlockingQueue<Message> queue, ExecutorService executor, FraudProcessor processor, Properties props) {
+    // garder une référence pour pouvoir se désabonner/stopper
+    private Dispatcher dispatcher;
+
+    public NatsService(Connection nc, BlockingQueue<Message> queue, ExecutorService executor,
+                       FraudProcessor processor, Properties props) {
         this.nc = nc;
         this.queue = queue;
         this.executor = executor;
@@ -31,30 +35,57 @@ public class NatsService {
     }
 
     public void startConsumer() {
-        Dispatcher dispatcher = nc.createDispatcher((msg) -> {
+        this.dispatcher = nc.createDispatcher(msg -> {
             try {
-                queue.put(msg);  // Ajoute à la queue pour backpressure
+                queue.put(msg); // backpressure
             } catch (InterruptedException e) {
                 logger.error("Error adding to queue", e);
-                Thread.currentThread().interrupt(); // Rétablir l'état d'interruption
+                Thread.currentThread().interrupt();
             }
         });
         dispatcher.subscribe(topic, "fraudmanager-group");
 
-        // Démarre les workers en fonction de threadPoolSize
         for (int i = 0; i < threadPoolSize; i++) {
             executor.submit(() -> {
-                while (true) {
+                // boucle interrompable
+                while (!Thread.currentThread().isInterrupted()) {
                     try {
                         Message msg = queue.take();
                         processor.process(msg);
                     } catch (InterruptedException e) {
-                        logger.error("Worker interrupted", e);
-                        Thread.currentThread().interrupt(); // Rétablir l'état d'interruption
+                        Thread.currentThread().interrupt();
+                        break; // sortir proprement
+                    } catch (Exception e) {
+                        logger.error("Worker error while processing message", e);
                     }
                 }
+                logger.info("Worker thread {} stopped", Thread.currentThread().getName());
             });
         }
         logger.info("Started {} worker threads for processing transactions", threadPoolSize);
+    }
+
+    // arrêt propre à appeler lors du shutdown de l’appli
+    public void stop() {
+        try {
+            if (dispatcher != null) {
+                dispatcher.unsubscribe(topic);
+                dispatcher = null;
+            }
+        } catch (Exception e) {
+            logger.warn("Error while unsubscribing dispatcher", e);
+        }
+
+        // interrompre les workers
+        executor.shutdownNow(); // provoque InterruptedException dans queue.take()
+
+        // libérer les ressources du processor (sessions Drools, pool interne, etc.)
+        processor.shutdown();
+
+        try {
+            // drainer/flush NATS si utile
+            nc.flush(java.time.Duration.ofSeconds(2));
+        } catch (Exception ignore) {}
+        logger.info("NatsService stopped");
     }
 }

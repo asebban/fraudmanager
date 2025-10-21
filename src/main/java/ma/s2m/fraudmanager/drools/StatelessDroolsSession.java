@@ -85,4 +85,8 @@ final class StatelessDroolsSession implements DroolsSession {
         }
         return null;
     }
+
+    @Override
+    public void dispose() {
+    }
 }

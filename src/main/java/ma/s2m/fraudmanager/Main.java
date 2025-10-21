@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 
 public class Main {
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
+    private static NatsService natsService;
 
     public static void main(String[] args) { 
         addShutdownHook();
@@ -25,7 +26,7 @@ public class Main {
         try {
             AppConfig config = new AppConfig();
             init();  // Initialisation des règles avant de démarrer le service NATS
-            NatsService natsService = config.natsService();
+            natsService = config.natsService();
             natsService.startConsumer();  // Démarre le consumer NATS et les workers
             logger.info("Application started. Listening for transactions...");
             // Blocage pour garder l'app en vie en permanence
@@ -147,6 +148,7 @@ public class Main {
                     keys.forEach(redisService::deleteKey);
                 }
                 logger.info("Redis cleanup completed.");
+                natsService.stop();
             } catch (Exception e) {
                 logger.error("Error during Redis cleanup on shutdown", e);
             }

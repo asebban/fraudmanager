@@ -27,6 +27,8 @@ import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.serializer.SerializationManager;
 import io.nats.client.Connection;
 import io.nats.client.Message;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -39,7 +41,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -58,7 +59,29 @@ public class FraudProcessor {
     private final KeyProcessor keyProcessor;
     private final ExecutorService executor = Executors.newFixedThreadPool(4); // Pool pour traitement parallèle
     private IMessageSender messageSender;
-    private DroolsSession session;
+    private DroolsSessionFactory sessionFactory;
+    private final Set<DroolsSession> allSessions = ConcurrentHashMap.newKeySet();
+    private final ThreadLocal<DroolsSession> threadLocalSession = ThreadLocal.withInitial(() -> {
+        DroolsSession s = createNewDroolsSession();   // méthode ci-dessous
+        allSessions.add(s);
+        // warm-up léger par thread (optionnel mais recommandé)
+        try { warmUpDrools(Subject.CARD, s); } catch (Exception ignore) {}
+        return s;
+    });
+
+    private DroolsSession createNewDroolsSession() {
+        HashMap<String, Object> globals = new HashMap<>();
+        globals.put("timeConverter", new TimeConversion());
+        globals.put("externalSystem", new ExternalSystem());
+        globals.put("messageSender", messageSender);
+        globals.put("typeConverter", new TypeConverter());
+
+        DroolsSession s = sessionFactory.newSession(SessionMode.STATEFUL, globals);
+        if (AppConfig.droolsProfilerEnabled) {
+            s.addEventListener(new RuleProfiler());
+        }
+        return s;
+    }
 
     public FraudProcessor(RedisService redisService, Connection natsConnection) throws IOException {
         this.redisService = redisService;
@@ -80,54 +103,44 @@ public class FraudProcessor {
                 e.printStackTrace();
             }
 
-            displayAllProperties(properties);
             try {
                 this.messageSender = (IMessageSender) Class.forName(properties.getProperty("app.processor.messaging.provider", "ma.medtech.droolbuilder.messaging.SysoutMessageSender")).newInstance();
             } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
                 throw new RuntimeException("ServiceFactory: Error while creating message sender", e);
             }
             
-            DroolsSessionFactory factory = new DroolsSessionFactory(RulesConfig.extendedVersion);
-
-            HashMap<String, Object> globals = new HashMap<>();
-            globals.put("timeConverter", new TimeConversion());
-            globals.put("externalSystem", new ExternalSystem());
-            globals.put("messageSender", messageSender);
-            globals.put("typeConverter", new TypeConverter());
-
-            this.session = factory.newSession(SessionMode.STATEFUL, globals);
-
-            if (AppConfig.droolsProfilerEnabled) {
-                session.addEventListener(new RuleProfiler());
-            }
-
-            warmUpDrools(Subject.CARD);
+            this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
+            threadLocalSession.get();
             
     }
 
     private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject) throws Exception {
+        return executeSession(windowSize, measurment, subject, threadLocalSession.get());
+    }
 
+    private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject, DroolsSession s) throws Exception {
         if (measurment == null) {
             throw new IllegalArgumentException("executeSession: Measurment cannot be null");
         }
-
         if (measurment.getAlertSet() == null) {
             measurment.setAlertSet(new AlertSet());
         }
-        this.session.execute(measurment, windowSize, subject);
-        return this.session;
+        s.execute(measurment, windowSize, subject);
+        return s;
     }
 
-    private void warmUpDrools(String subject) {
+    private void warmUpDrools(String subject, DroolsSession s) {
         VirtualRecordTransaction dummyTrx = TransactionDummyHelper.dummyTransaction();
         Measurment m = createNewMeasument("card-1", subject, 10000L);
         m.setTransaction(new VRTransactionSummary(dummyTrx));
         try {
-            executeSession(10000L, m, subject);
+            // on warm-up la session fournie
+            executeSession(10000L, m, subject, s);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
+
 
     private Measurment createNewMeasument(String key, String subject, Long windowSize) {
         Measurment measurment = new Measurment();
@@ -282,7 +295,7 @@ public class FraudProcessor {
         }
 
         if (initialMeasurment.getRecords().isEmpty()) {
-            for(Entry<String, MeasurmentRecord> entry : finalMeasurment.getRecords().getRecordHashMap().entrySet()) {
+            for(Entry<String, MeasurmentRecord> entry : finalMeasurment.getRecords().asUnmodifiableMap().entrySet()) {
                 String recordKey = entry.getKey();
                 MeasurmentRecord record = entry.getValue();
 
@@ -297,10 +310,10 @@ public class FraudProcessor {
             return deltas;
         }
 
-        for(Entry<String, MeasurmentRecord> entry : finalMeasurment.getRecords().getRecordHashMap().entrySet()) {
+        for(Entry<String, MeasurmentRecord> entry : finalMeasurment.getRecords().asUnmodifiableMap().entrySet()) {
             String recordKey = entry.getKey();
             MeasurmentRecord finalRecord = entry.getValue();
-            MeasurmentRecord initialRecord = initialMeasurment.getRecords().get(recordKey);
+            MeasurmentRecord initialRecord = initialMeasurment.getRecords().peek(recordKey);
 
             if (initialRecord == null) {
                 deltas.put(recordKey, new RecordsDelta());
@@ -722,6 +735,7 @@ public class FraudProcessor {
      * Fermeture propre du processor et de ses ressources
      */
     public void shutdown() {
+
         if (executor != null && !executor.isShutdown()) {
             logger.info("Shutting down FraudProcessor executor...");
             executor.shutdown();
@@ -736,6 +750,16 @@ public class FraudProcessor {
                 Thread.currentThread().interrupt();
             }
         }
+
+        try {
+            for (DroolsSession s : allSessions) {
+                try { s.dispose(); } catch (Exception ignore) {}
+            }
+        } finally {
+            allSessions.clear();
+            threadLocalSession.remove();
+        }
+
     }
 
     private void logMeasurment(Measurment m, Long windowSize, String subject, String trxNo) {
@@ -744,15 +768,5 @@ public class FraudProcessor {
             return;
         }
         logger.debug("Measurment for trx {} subject {} window {}: {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize), m.toString());
-    }
-
-    /**
-     * Affiche toutes les propriétés disponibles dans l'objet Properties
-     * @param properties L'objet Properties à afficher
-     */
-    private void displayAllProperties(Properties properties) {
-        properties.forEach((key, value) -> {
-            logger.info("################ Property: {} = {}", key, value);
-        });
     }
 }

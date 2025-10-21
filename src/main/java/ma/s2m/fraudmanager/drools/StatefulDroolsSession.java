@@ -121,6 +121,11 @@ final class StatefulDroolsSession implements DroolsSession {
         return null;
     }
 
+    @Override
+    public void dispose() {
+        ks.dispose();
+    }
+
     
 
 }
