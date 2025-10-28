@@ -3,6 +3,7 @@ package ma.s2m.fraudmanager.service;
 import ma.medtech.droolbuilder.messaging.IMessageSender;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.medtech.droolbuilder.services.TypeConverter;
+import ma.medtech.droolbuilder.utils.TimeConversion;
 import ma.s2m.auth.Alert;
 import ma.s2m.auth.AlertSet;
 import ma.s2m.auth.FraudCheckRequest;
@@ -16,7 +17,6 @@ import ma.s2m.fraudmanager.drools.DroolsSession;
 import ma.s2m.fraudmanager.drools.DroolsSessionFactory;
 import ma.s2m.fraudmanager.drools.SessionMode;
 import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
-import ma.s2m.fraudmanager.helpers.TimeConversion;
 import ma.s2m.fraudmanager.helpers.TransactionDummyHelper;
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.MeasurmentRecord;
@@ -34,6 +34,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -110,12 +111,10 @@ public class FraudProcessor {
             }
             
             this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
-            threadLocalSession.get();
-            
     }
 
     private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject) throws Exception {
-        return executeSession(windowSize, measurment, subject, threadLocalSession.get());
+        return executeSession(windowSize, measurment, subject, this.threadLocalSession.get());
     }
 
     private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject, DroolsSession s) throws Exception {
@@ -295,7 +294,7 @@ public class FraudProcessor {
         }
 
         if (initialMeasurment.getRecords().isEmpty()) {
-            for(Entry<String, MeasurmentRecord> entry : finalMeasurment.getRecords().asUnmodifiableMap().entrySet()) {
+            for(Entry<String, MeasurmentRecord> entry : Collections.unmodifiableMap(finalMeasurment.getRecords().getRecordHashMap()).entrySet()) {
                 String recordKey = entry.getKey();
                 MeasurmentRecord record = entry.getValue();
 
@@ -310,7 +309,7 @@ public class FraudProcessor {
             return deltas;
         }
 
-        for(Entry<String, MeasurmentRecord> entry : finalMeasurment.getRecords().asUnmodifiableMap().entrySet()) {
+        for(Entry<String, MeasurmentRecord> entry : Collections.unmodifiableMap(finalMeasurment.getRecords().getRecordHashMap()).entrySet()) {
             String recordKey = entry.getKey();
             MeasurmentRecord finalRecord = entry.getValue();
             MeasurmentRecord initialRecord = initialMeasurment.getRecords().peek(recordKey);
@@ -381,7 +380,7 @@ public class FraudProcessor {
             return new HashMap<>(finalMeasurment.getLasts());
         }
 
-        for(Entry<String, Object> entry : finalMeasurment.getLasts().entrySet()) {
+        for(Entry<String, Object> entry : Collections.unmodifiableMap(finalMeasurment.getLasts()).entrySet()) {
             String lastKey = entry.getKey();
             Object finalValue = entry.getValue();
             Object initialValue = initialMeasurment.getLasts().get(lastKey);
