@@ -1060,10 +1060,10 @@ public class FraudProcessor {
      * @param trxNo      The transaction number.
      */
     private void logMeasurment(Measurment m, Long windowSize, String subject, String trxNo) {
-        if (m == null) {
-            logger.debug("Measurment is null for trx {} subject {} window {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize));
-            return;
-        }
-        logger.debug("Measurment for trx {} subject {} window {}: {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize), m.toString());
+        // if (m == null) {
+        //     logger.debug("Measurment is null for trx {} subject {} window {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize));
+        //     return;
+        // }
+        // logger.debug("Measurment for trx {} subject {} window {}: {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize), m.toString());
     }
 }
