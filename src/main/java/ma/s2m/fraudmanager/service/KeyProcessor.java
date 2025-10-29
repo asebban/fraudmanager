@@ -35,9 +35,8 @@ public class KeyProcessor {
             if (redisService.acquireLock(lockKey, lockValue)) {
                 try {
                     // Splitter la dataKey avec séparateur ":" et prendre l'élément d'index 1
-                    String[] keyParts = dataKey.split(":");
-                    String keyElement = keyParts.length > 1 ? keyParts[1] : dataKey;
-                    
+                    int index = dataKey.indexOf(":");
+                    String keyElement = index > 0 ? dataKey.substring(index + 1) : dataKey;
                     logger.debug("Processing datakey: {} -> key: {}", dataKey, keyElement);
                     
                     // Traiter les données

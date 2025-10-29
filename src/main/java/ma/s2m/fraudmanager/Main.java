@@ -87,6 +87,7 @@ public class Main {
         RulesConfig.rulesMapForCardSubject = new HashMap<>();
         RulesConfig.rulesMapForMerchantSubject = new HashMap<>();
         RulesConfig.rulesMapForAnySubject = new HashMap<>();
+        RulesConfig.rulesMapForCustomSubject = new HashMap<>();
 
         rules.forEach(ruleDefinition -> {
             Long windowSize = ruleDefinition.getTimeFrame() * ruleDefinition.getTimeframeUnit();
@@ -118,6 +119,22 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 RulesConfig.rulesMapForAnySubject.put(windowSize, ruleDefinitions);
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM)) {
+
+                String customSubjectKey = ruleDefinition.getCustomSubject();
+                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject.get(customSubjectKey);
+                if (customWindows == null) {
+                    customWindows = new HashMap<>();
+                }
+                List<RuleDefinition> ruleDefinitions = customWindows.get(windowSize);
+                if (ruleDefinitions == null) {
+                    ruleDefinitions = new ArrayList<>();
+                }
+                if (ruleDefinition.getRuleType() == RuleDefinition.RULE_TYPE_ALERT) {
+                    ruleDefinitions.add(ruleDefinition);
+                }
+                customWindows.put(windowSize, ruleDefinitions);
+                RulesConfig.rulesMapForCustomSubject.put(customSubjectKey, customWindows);
             } else {
                 logger.warn("Unknown subject type: " + ruleDefinition.getSubject() + " for rule: " + ruleDefinition.getRuleTitle());
             }
@@ -127,6 +144,7 @@ public class Main {
         RulesConfig.cardSubjectPresent = !RulesConfig.rulesMapForCardSubject.isEmpty();
         RulesConfig.merchantSubjectPresent = !RulesConfig.rulesMapForMerchantSubject.isEmpty();
         RulesConfig.anySubjectPresent = !RulesConfig.rulesMapForAnySubject.isEmpty();
+        RulesConfig.customSubjectPresent = !RulesConfig.rulesMapForCustomSubject.isEmpty();
     }
 
     /**

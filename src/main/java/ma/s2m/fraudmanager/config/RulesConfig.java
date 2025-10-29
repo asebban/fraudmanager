@@ -12,6 +12,8 @@ public class RulesConfig {
     public static Boolean merchantSubjectPresent = false;
     public static HashMap<Long, List<RuleDefinition>> rulesMapForAnySubject = new HashMap<>();
     public static Boolean anySubjectPresent = false;
+    public static HashMap<String, HashMap<Long, List<RuleDefinition>>> rulesMapForCustomSubject = new HashMap<>();
+    public static Boolean customSubjectPresent = false;
     public static Integer alertRulesCount = 0;
     public static String extendedVersion = "";
 

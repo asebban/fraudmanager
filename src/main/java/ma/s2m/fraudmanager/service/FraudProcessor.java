@@ -53,6 +53,7 @@ public class FraudProcessor {
     private static final String CARD_KEY_PREFIX = Subject.CARD + ":";
     private static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + ":";
     private static final String ANY_KEY_PREFIX = Subject.ANY + ":";
+    private static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + ":";
 
     private static final Logger logger = LoggerFactory.getLogger(FraudProcessor.class);
     private final RedisService redisService;
@@ -208,6 +209,13 @@ public class FraudProcessor {
         return event;
     }
 
+    /**
+     * Subtracts a double value from the specified attribute in the measurement record.
+     *
+     * @param entry   The entry containing the attribute key and value.
+     * @param record  The measurement record to update.
+     * @param attrKey The key of the attribute to subtract the value from.
+     */
     private void substractDoubleValue(Entry<String, Object> entry, MeasurmentRecord record, String attrKey) {
         if (entry.getValue() != null && entry.getValue() instanceof Double && (Double)entry.getValue() != 0.0) {
             Double deltaValue = (Double) entry.getValue();
@@ -218,6 +226,13 @@ public class FraudProcessor {
         }
     }
 
+    /**
+     * Subtracts an integer value from the specified attribute in the measurement record.
+     *
+     * @param entry   The entry containing the attribute key and value.
+     * @param record  The measurement record to update.
+     * @param attrKey The key of the attribute to subtract the value from.
+     */
     private void substractIntegerValue(Entry<String, Object> entry, MeasurmentRecord record, String attrKey) {
         if (entry.getValue() != null && entry.getValue() instanceof Integer && (Integer)entry.getValue() != 0) {
             Integer deltaValue = (Integer) entry.getValue();
@@ -228,6 +243,13 @@ public class FraudProcessor {
         }
     }
 
+    /**
+     * Subtracts a long value from the specified attribute in the measurement record.
+     *
+     * @param entry   The entry containing the attribute key and value.
+     * @param record  The measurement record to update.
+     * @param attrKey The key of the attribute to subtract the value from.
+     */
     private void substractLongValue(Entry<String, Object> entry, MeasurmentRecord record, String attrKey) {
         if (entry.getValue() != null && entry.getValue() instanceof Long && (Long)entry.getValue() != 0L) {
             Long deltaValue = (Long) entry.getValue();
@@ -238,6 +260,12 @@ public class FraudProcessor {
         }
     }
 
+    /**
+     * Subtracts delta values from the measurement based on the transaction entry.
+     *
+     * @param m        The measurement to update.
+     * @param trxEntry The transaction entry containing delta values.
+     */
     private void substractDelta(Measurment m, TrxEntry trxEntry) {
 
         if (trxEntry == null) {
@@ -287,6 +315,13 @@ public class FraudProcessor {
         }
     }
 
+    /**
+     * Creates a map of record deltas by comparing the initial and final measurements.
+     *
+     * @param initialMeasurment The initial measurement.
+     * @param finalMeasurment   The final measurement.
+     * @return A map of record deltas.
+     */
     private Map<String, RecordsDelta> createRecordsDelta(Measurment initialMeasurment, Measurment finalMeasurment) {
         Map<String, RecordsDelta> deltas = new HashMap<>();
         if (initialMeasurment == null || finalMeasurment == null) {
@@ -370,6 +405,13 @@ public class FraudProcessor {
         return deltas;
     }
 
+    /**
+     * Creates a map of last deltas by comparing the initial and final measurements.
+     *
+     * @param initialMeasurment The initial measurement.
+     * @param finalMeasurment   The final measurement.
+     * @return A map of last deltas.
+     */
     private Map<String, Object> createLastsDelta(Measurment initialMeasurment, Measurment finalMeasurment) {
         Map<String, Object> deltas = new HashMap<>();
         if (initialMeasurment == null || finalMeasurment == null) {
@@ -393,6 +435,18 @@ public class FraudProcessor {
         return deltas;
     }
 
+    /**
+     * Processes the measurement window size and updates the measurement accordingly.
+     *
+     * @param key           The key associated with the measurement.
+     * @param measurment    The measurement to process.
+     * @param windowSize    The size of the window.
+     * @param event         The transaction or alert event.
+     * @param arrivalTime   The arrival time of the event.
+     * @param correlationId The correlation ID for logging.
+     * @param subject       The subject of the event.
+     * @return The updated measurement.
+     */
     private Measurment processWindowSize(String key, Measurment measurment, Long windowSize, TrxOrAlertEvent event, Long arrivalTime, String correlationId, String subject) {
 
         VRTransactionSummary transaction = event.getTransaction();
@@ -490,6 +544,14 @@ public class FraudProcessor {
         return measurment;      
     }
 
+    /**
+     * Completes the alert set by setting additional attributes based on the event and subject.
+     *
+     * @param alertSet The alert set to complete.
+     * @param event    The transaction or alert event.
+     * @param subject  The subject of the event.
+     * @return The completed alert set.
+     */
     private AlertSet completeAlertSet(AlertSet alertSet, TrxOrAlertEvent event, String subject) {
         if (alertSet == null) {
             logger.warn("AlertSet is null, should not happen");
@@ -519,6 +581,13 @@ public class FraudProcessor {
         return alertSet;
     }
 
+    /**
+     * Merges two alert sets into one, combining their alerts and updating the status and score.
+     *
+     * @param originalAlertSet The original alert set.
+     * @param newAlertSet      The new alert set to merge.
+     * @return The merged alert set.
+     */
     private AlertSet mergeAlertSets(AlertSet originalAlertSet, AlertSet newAlertSet) {
         if (originalAlertSet == null) {
             if (newAlertSet != null) {
@@ -560,6 +629,11 @@ public class FraudProcessor {
     }
 
 
+    /**
+     * Processes a message by deserializing it, processing the event, and publishing a response.
+     *
+     * @param msg The message to process.
+     */
     public void process(Message msg) {
         String topic = msg.getReplyTo();
         long arrivalTime = System.currentTimeMillis();
@@ -593,6 +667,7 @@ public class FraudProcessor {
             CompletableFuture<TrxOrAlertEvent> cardProcessing = null;
             CompletableFuture<TrxOrAlertEvent> merchantProcessing = null;
             CompletableFuture<TrxOrAlertEvent> anyProcessing = null;
+            CompletableFuture<TrxOrAlertEvent> customProcessing = null;
 
             if (RulesConfig.cardSubjectPresent) {
                 cardProcessing = CompletableFuture.supplyAsync(() -> {
@@ -622,6 +697,25 @@ public class FraudProcessor {
                 }, executor);
             }
 
+            List<CompletableFuture<TrxOrAlertEvent>> customProcessings = new ArrayList<>();
+            if (RulesConfig.customSubjectPresent) {
+                for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
+                    customProcessing = CompletableFuture.supplyAsync(() -> {
+                        try {
+                            String customKey = CUSTOM_KEY_PREFIX + customSubject;
+                            return keyProcessor.executeWithLock(customKey, (key) -> {
+                                return processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM);
+                            });
+                        } catch (Exception e) {
+                            logger.error("Error processing custom subject key: {}", customSubject, e);
+                            Thread.currentThread().interrupt();
+                            return null;
+                        }
+                    }, executor);
+                    customProcessings.add(customProcessing);
+                }
+            }
+
             if (RulesConfig.anySubjectPresent) {
                 String anyKey = ANY_KEY_PREFIX + "global";
                 anyProcessing = CompletableFuture.supplyAsync(() -> {
@@ -645,9 +739,13 @@ public class FraudProcessor {
             if (merchantProcessing != null) {
                 futures.add(merchantProcessing);
             }
-            /*if (anyProcessing != null) {
+            if (anyProcessing != null) {
                 futures.add(anyProcessing);
-            }*/
+            }
+            if (customProcessings != null && !customProcessings.isEmpty()) {
+                futures.addAll(customProcessings);
+            }
+
             
             CompletableFuture<Void> allProcessing = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
             allProcessing.join();
@@ -659,6 +757,7 @@ public class FraudProcessor {
                 TrxOrAlertEvent cardEvent = cardProcessing != null ? cardProcessing.get() : null;
                 TrxOrAlertEvent merchantEvent = merchantProcessing != null ? merchantProcessing.get() : null;
                 TrxOrAlertEvent anyEvent = anyProcessing != null ? anyProcessing.get() : null;
+                List<TrxOrAlertEvent> customEvents = new ArrayList<>();
 
                 if (cardEvent != null) {
                     combinedAlertSet = cardEvent.getAlertSet();
@@ -669,6 +768,18 @@ public class FraudProcessor {
                 if (anyEvent != null) {
                     combinedAlertSet = mergeAlertSets(combinedAlertSet, anyEvent.getAlertSet());
                 }
+
+                for (CompletableFuture<TrxOrAlertEvent> customFuture : customProcessings) {
+                    TrxOrAlertEvent customEvent = customFuture.get();
+                    if (customEvent != null) {
+                        customEvents.add(customEvent);
+                    }
+                }
+
+                for (TrxOrAlertEvent customEvent : customEvents) {
+                    combinedAlertSet = mergeAlertSets(combinedAlertSet, customEvent.getAlertSet());
+                }
+
             } catch (Exception e) {
                 logger.warn("Error retrieving processing results", e);
             }
@@ -693,13 +804,20 @@ public class FraudProcessor {
         }
     }
 
-    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject) {
-
-        logger.debug("[{}] [{}] [Thread : {}] Card processing started for card: {}", correlationId, subject, Thread.currentThread().getName(), event.getTransaction().getCardId());
+    /**
+     * Processes a card event by updating the measurement windows and merging alert sets.
+     *
+     * @param event         The transaction or alert event.
+     * @param key           The key associated with the event.
+     * @param arrivalTime   The arrival time of the event.
+     * @param correlationId The correlation ID for logging.
+     * @return The processed card event.
+     */
+    private TrxOrAlertEvent processCardEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId) {
         long windowsStart = System.currentTimeMillis();
-        AlertSet alertSet = newAlertSet(event, subject);
+        AlertSet alertSet = newAlertSet(event, Subject.CARD);
         TrxOrAlertEvent cardEvent = buildEvent(event, alertSet);
-        String eventKey = subject + ":" + key;
+        String eventKey = CARD_KEY_PREFIX + key;
         Map<Long, Measurment> windows = redisService.getMeasurments(eventKey);
 
         for (Entry<Long, List<RuleDefinition>> entry : RulesConfig.rulesMapForCardSubject.entrySet()) {
@@ -708,7 +826,7 @@ public class FraudProcessor {
             long retrieveBegin = System.currentTimeMillis();
             Measurment measurment = windows.get(ruleWindowSize);
             long retrieveEnd = System.currentTimeMillis();
-            logger.debug("### [{}] [{}] [Thread : {}] win={} key={} ProcessFunction: Retrieving state took {} ms", correlationId, subject, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, (retrieveEnd - retrieveBegin));
+            logger.debug("### [{}] [{}] [Thread : {}] win={} key={} ProcessFunction: Retrieving state took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, (retrieveEnd - retrieveBegin));
 
             measurment = processWindowSize(key, measurment, ruleWindowSize, cardEvent, arrivalTime, correlationId, Subject.CARD);
 
@@ -722,12 +840,184 @@ public class FraudProcessor {
         long updateBegin = System.currentTimeMillis();
         redisService.setMeasurments(eventKey, windows);
         long updateEnd = System.currentTimeMillis();
-        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: Updating state took {} ms", correlationId, subject, Thread.currentThread().getName(), key, (updateEnd - updateBegin));
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: Updating state took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (updateEnd - updateBegin));
 
         long windowsEnd = System.currentTimeMillis();
-        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: All windows processing took {} ms", correlationId, subject, Thread.currentThread().getName(), key, (windowsEnd - windowsStart));
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: All windows processing took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (windowsEnd - windowsStart));
         cardEvent.setAlertSet(alertSet);
         return cardEvent;    
+    }
+
+    /**
+     * Processes a merchant event by updating the measurement windows and merging alert sets.
+     *
+     * @param event         The transaction or alert event.
+     * @param key           The key associated with the event.
+     * @param arrivalTime   The arrival time of the event.
+     * @param correlationId The correlation ID for logging.
+     * @return The processed merchant event.
+     */
+    private TrxOrAlertEvent processMerchantEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId) {
+        long windowsStart = System.currentTimeMillis();
+        AlertSet alertSet = newAlertSet(event, Subject.CARD);
+        TrxOrAlertEvent merchantEvent = buildEvent(event, alertSet);
+        String eventKey = MERCHANT_KEY_PREFIX + key;
+        Map<Long, Measurment> windows = redisService.getMeasurments(eventKey);
+
+        for (Entry<Long, List<RuleDefinition>> entry : RulesConfig.rulesMapForMerchantSubject.entrySet()) {
+
+            Long ruleWindowSize = (Long) entry.getKey();
+            long retrieveBegin = System.currentTimeMillis();
+            Measurment measurment = windows.get(ruleWindowSize);
+            long retrieveEnd = System.currentTimeMillis();
+            logger.debug("### [{}] [{}] [Thread : {}] win={} key={} ProcessFunction: Retrieving state took {} ms", correlationId, Subject.MERCHANT, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, (retrieveEnd - retrieveBegin));
+
+            measurment = processWindowSize(key, measurment, ruleWindowSize, merchantEvent, arrivalTime, correlationId, Subject.MERCHANT);
+
+            alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
+            measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
+            measurment.setTransaction(null); // clear transaction to avoid serialization issues
+
+            windows.put(ruleWindowSize, measurment);
+        }
+
+        long updateBegin = System.currentTimeMillis();
+        redisService.setMeasurments(eventKey, windows);
+        long updateEnd = System.currentTimeMillis();
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: Updating state took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (updateEnd - updateBegin));
+
+        long windowsEnd = System.currentTimeMillis();
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: All windows processing took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (windowsEnd - windowsStart));
+        merchantEvent.setAlertSet(alertSet);
+        return merchantEvent;    
+    }
+
+    /**
+     * Processes an "any" event by updating the measurement windows and merging alert sets.
+     *
+     * @param event         The transaction or alert event.
+     * @param key           The key associated with the event.
+     * @param arrivalTime   The arrival time of the event.
+     * @param correlationId The correlation ID for logging.
+     * @return The processed "any" event.
+     */
+    private TrxOrAlertEvent processAnyEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId) {
+        long windowsStart = System.currentTimeMillis();
+        AlertSet alertSet = newAlertSet(event, Subject.ANY);
+        TrxOrAlertEvent anyEvent = buildEvent(event, alertSet);
+        String eventKey = ANY_KEY_PREFIX + key;
+        Map<Long, Measurment> windows = redisService.getMeasurments(eventKey);
+
+        for (Entry<Long, List<RuleDefinition>> entry : RulesConfig.rulesMapForAnySubject.entrySet()) {
+
+            Long ruleWindowSize = (Long) entry.getKey();
+            long retrieveBegin = System.currentTimeMillis();
+            Measurment measurment = windows.get(ruleWindowSize);
+            long retrieveEnd = System.currentTimeMillis();
+            logger.debug("### [{}] [{}] [Thread : {}] win={} key={} ProcessFunction: Retrieving state took {} ms", correlationId, Subject.MERCHANT, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, (retrieveEnd - retrieveBegin));
+
+            measurment = processWindowSize(key, measurment, ruleWindowSize, anyEvent, arrivalTime, correlationId, Subject.ANY);
+
+            alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
+            measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
+            measurment.setTransaction(null); // clear transaction to avoid serialization issues
+
+            windows.put(ruleWindowSize, measurment);
+        }
+
+        long updateBegin = System.currentTimeMillis();
+        redisService.setMeasurments(eventKey, windows);
+        long updateEnd = System.currentTimeMillis();
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: Updating state took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (updateEnd - updateBegin));
+
+        long windowsEnd = System.currentTimeMillis();
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: All windows processing took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (windowsEnd - windowsStart));
+        anyEvent.setAlertSet(alertSet);
+        return anyEvent;    
+    }
+
+    /**
+     * Processes a custom event by updating the measurement windows and merging alert sets.
+     *
+     * @param event         The transaction or alert event.
+     * @param key           The key associated with the event.
+     * @param arrivalTime   The arrival time of the event.
+     * @param correlationId The correlation ID for logging.
+     * @return The processed custom event.
+     */
+    private TrxOrAlertEvent processCustomEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId) {
+        long windowsStart = System.currentTimeMillis();
+        AlertSet alertSet = newAlertSet(event, Subject.ANY);
+        TrxOrAlertEvent customEvent = buildEvent(event, alertSet);
+        String customSubject = key;
+        VRTransactionSummary tx = event.getTransaction();
+        
+        String cleanedCustomSubject = VRTransactionSummary.cleanCustomSubject(customSubject);
+
+        try {
+            key = tx.getKey(key);
+            key = cleanedCustomSubject + "/" + key;
+        } catch (IllegalArgumentException | NoSuchFieldException e) {
+            e.printStackTrace();
+        }
+
+        String eventKey = CUSTOM_KEY_PREFIX + key;
+        Map<Long, Measurment> windows = redisService.getMeasurments(eventKey);
+
+        Map<Long, List<RuleDefinition>> rulesMapForCustomSubject = RulesConfig.rulesMapForCustomSubject.get(customSubject);
+
+        for (Entry<Long, List<RuleDefinition>> entry : rulesMapForCustomSubject.entrySet()) {
+
+            Long ruleWindowSize = (Long) entry.getKey();
+            long retrieveBegin = System.currentTimeMillis();
+            Measurment measurment = windows.get(ruleWindowSize);
+            long retrieveEnd = System.currentTimeMillis();
+            logger.debug("### [{}] [{}] [Thread : {}] win={} key={} ProcessFunction: Retrieving state took {} ms", correlationId, Subject.CUSTOM, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, (retrieveEnd - retrieveBegin));
+
+            measurment = processWindowSize(key, measurment, ruleWindowSize, customEvent, arrivalTime, correlationId, Subject.CUSTOM);
+
+            alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
+            measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
+            measurment.setTransaction(null); // clear transaction to avoid serialization issues
+
+            windows.put(ruleWindowSize, measurment);
+        }
+
+        long updateBegin = System.currentTimeMillis();
+        redisService.setMeasurments(eventKey, windows);
+        long updateEnd = System.currentTimeMillis();
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: Updating state took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (updateEnd - updateBegin));
+
+        long windowsEnd = System.currentTimeMillis();
+        logger.debug("### [{}] [{}] [Thread : {}] key={} ProcessFunction: All windows processing took {} ms", correlationId, Subject.CARD, Thread.currentThread().getName(), key, (windowsEnd - windowsStart));
+        customEvent.setAlertSet(alertSet);
+        return customEvent;    
+    }
+
+    /**
+     * Processes an event based on its subject type.
+     *
+     * @param event         The transaction or alert event.
+     * @param key           The key associated with the event.
+     * @param arrivalTime   The arrival time of the event.
+     * @param correlationId The correlation ID for logging.
+     * @param subject       The subject of the event.
+     * @return The processed event.
+     */
+    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject) {
+        switch(subject) {
+            case Subject.CARD:
+                return processCardEvent(event, key, arrivalTime, correlationId);
+            case Subject.MERCHANT:
+                return processMerchantEvent(event, key, arrivalTime, correlationId);
+            case Subject.ANY:
+                return processAnyEvent(event, key, arrivalTime, correlationId);
+            case Subject.CUSTOM:
+                return processCustomEvent(event, key, arrivalTime, correlationId);
+            default:
+                logger.error("Unknown subject type: {}", subject);
+                return null;
+        }
     }
 
     /**
@@ -761,6 +1051,14 @@ public class FraudProcessor {
 
     }
 
+    /**
+     * Logs the measurement details for debugging purposes.
+     *
+     * @param m          The measurement to log.
+     * @param windowSize The size of the window.
+     * @param subject    The subject of the measurement.
+     * @param trxNo      The transaction number.
+     */
     private void logMeasurment(Measurment m, Long windowSize, String subject, String trxNo) {
         if (m == null) {
             logger.debug("Measurment is null for trx {} subject {} window {}", trxNo, subject, TimeConversion.toHumanReadableDuration(windowSize));

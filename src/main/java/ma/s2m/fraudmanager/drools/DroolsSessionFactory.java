@@ -1,16 +1,25 @@
 package ma.s2m.fraudmanager.drools;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.kie.api.KieBase;
 import org.kie.api.KieServices;
+import org.kie.api.builder.KieBuilder;
+import org.kie.api.builder.KieFileSystem;
 import org.kie.api.builder.KieModule;
 import org.kie.api.builder.KieRepository;
+import org.kie.api.builder.Results;
+import org.kie.api.io.Resource;
 import org.kie.api.runtime.KieContainer;
 import org.kie.api.runtime.KieSession;
 import org.kie.api.runtime.StatelessKieSession;
+import org.slf4j.Logger;
 
 import ma.s2m.fraudmanager.config.AppConfig;
 
@@ -18,6 +27,30 @@ import ma.s2m.fraudmanager.config.AppConfig;
 public final class DroolsSessionFactory {
 
     private final KieContainer kieContainer;
+    private Logger logger = org.slf4j.LoggerFactory.getLogger(DroolsSessionFactory.class);
+
+    private void validateDrl(KieServices ks) throws IOException {
+        Path rulesDir = Paths.get(AppConfig.repositoryWorkspaceDirectory + File.separator + "src/main/resources/com/fraudmanager/rules", "computes");
+        KieFileSystem kfs = ks.newKieFileSystem();
+
+        try (Stream<Path> walk = Files.walk(rulesDir)) {
+                walk.filter(p -> Files.isRegularFile(p) && p.toString().endsWith(".drl"))
+                    .forEach(p -> {
+                        Resource res = ks.getResources().newFileSystemResource(p.toFile());
+                        kfs.write("src/main/resources/rules/" + rulesDir.relativize(p), res);
+                });
+        }
+
+        KieBuilder kieBuilder = ks.newKieBuilder(kfs).buildAll(); // ou buildAll(ExecutableModelProject.class)
+        Results results = kieBuilder.getResults();
+
+        if (results.hasMessages(org.kie.api.builder.Message.Level.ERROR)) {
+            StringBuilder sb = new StringBuilder("Error(s) found:\n");
+            results.getMessages(org.kie.api.builder.Message.Level.ERROR).forEach(m -> sb.append(" - ").append(m.getText()).append("\n"));
+            logger.error("Error(s) found: {}", sb.toString());
+            throw new IllegalStateException(sb.toString());
+        }
+    }
 
     public DroolsSessionFactory(String extendedVersion) throws IOException {
         // ex: extendedVersion = "myrules-1.0.3"
@@ -28,6 +61,8 @@ public final class DroolsSessionFactory {
             AppConfig.ruleDeploymentDir + java.io.File.separator + ruleset + "-" + version + ".jar");
 
         KieServices ks = KieServices.Factory.get();
+        validateDrl(ks);
+        
         KieRepository repo = ks.getRepository();
         KieModule km = repo.addKieModule(ks.getResources().newFileSystemResource(kjar.toFile()));
         if (km == null) throw new IllegalStateException(

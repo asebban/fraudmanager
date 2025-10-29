@@ -39,6 +39,7 @@ public class AppConfig {
     public static Boolean droolsRulesAgendaGroupRuleTypeEnabled = false;
     public static String appProcessorMessagingProvider = "";
     public static Boolean appRedisCleanOnShutdown = false;
+    public static String repositoryWorkspaceDirectory = "";
 
     public AppConfig() {
         props = new Properties();
@@ -111,6 +112,11 @@ public class AppConfig {
             appRedisCleanOnShutdown = Boolean.parseBoolean(props.getProperty("app.redis.clean.on.shutdown", "false"));
             if (System.getenv("APP_REDIS_CLEAN_ON_SHUTDOWN") != null) {
                 appRedisCleanOnShutdown = Boolean.parseBoolean(System.getenv("APP_REDIS_CLEAN_ON_SHUTDOWN"));
+            }
+
+            repositoryWorkspaceDirectory = props.getProperty("drool.builder.repository.workspace.directory", "");
+            if (System.getenv().get("DROOL_BUILDER_REPOSITORY_WORKSPACE_DIRECTORY") != null) {
+                repositoryWorkspaceDirectory = System.getenv().get("DROOL_BUILDER_REPOSITORY_WORKSPACE_DIRECTORY");
             }
 
         } catch (Exception e) {
