@@ -26,17 +26,7 @@
             <artifactId>lettuce-core</artifactId>
             <version>6.4.0.RELEASE</version>
         </dependency>
-        <!-- Drools -->
-        <dependency>
-            <groupId>org.drools</groupId>
-            <artifactId>drools-core</artifactId>
-            <version>7.74.0.Final</version>
-        </dependency>
-        <dependency>
-            <groupId>org.drools</groupId>
-            <artifactId>drools-mvel</artifactId>
-            <version>7.74.0.Final</version>
-        </dependency>
+
         <!-- JSON Serialization (pour transactions) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
