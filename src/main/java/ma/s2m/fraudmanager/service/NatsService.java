@@ -38,6 +38,7 @@ public class NatsService {
         this.dispatcher = nc.createDispatcher(msg -> {
             try {
                 queue.put(msg); // backpressure
+                logger.debug("Worker thread {} got a message, Queue size: {}", Thread.currentThread().getName(), queue.size());
             } catch (InterruptedException e) {
                 logger.error("Error adding to queue", e);
                 Thread.currentThread().interrupt();
@@ -51,7 +52,12 @@ public class NatsService {
                 while (!Thread.currentThread().isInterrupted()) {
                     try {
                         Message msg = queue.take();
+                        Long startTime = System.currentTimeMillis();
                         processor.process(msg);
+                        Long endTime = System.currentTimeMillis();
+                        String correlationId = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-correlation-id");
+                        logger.debug("Time {} [{}] [{}] [Thread {}] Time taken to process the whole message from NATS receive to end of processing",
+                                (endTime - startTime), correlationId, msg.getSubject(), Thread.currentThread().getName());
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break; // sortir proprement

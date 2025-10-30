@@ -62,22 +62,20 @@ final class StatefulDroolsSession implements DroolsSession {
             ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_ALERT) + this.subject + "->" + formattedDuration).setFocus();
             ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_COMPUTE) + this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.nanoTime();
-            logger.debug("###### Begin internal ksession execute drools to before fireAllRules for trx {} and window {} is {} ms", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration, (t0 - beginExecuteDrools)/1_000_000);
+            logger.debug("Time {} Begin internal ksession execute drools to before fireAllRules for window {}", (t0 - beginExecuteDrools)/1_000_000, formattedDuration);
             ks.fireAllRules();
             Long t1 = System.nanoTime();
-            logger.debug("###### Rules fired in " + (t1 - t0)/1_000_000 + " ms for trx " + (m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A"));
-
+            logger.debug("Time {} ms of execution of fireAllRules for window {}", (t1 - t0)/1_000_000, formattedDuration);
             if (droolsProfilerEnabled) {
                 System.out.printf("********** Drools Rule Profiling Report for trx %s and window %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(System.out::println);
             }
             
-            logger.debug("###### Time of internal logging ksession execute drools after fireAllRules for trx {} and window {} is {} ms", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration, (System.nanoTime() - t1)/1_000_000);
        } else {
             ks.getAgenda().getAgendaGroup(this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.nanoTime();
             ks.fireAllRules();
-            logger.debug("###### Rules fired in " + (System.nanoTime() - t0)/1_000_000 + " ms for trx " + (m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A"));
+            logger.debug("Time {} ms of execution of fireAllRules for window {}", (System.nanoTime() - t0)/1_000_000, formattedDuration);
 
             if (droolsProfilerEnabled) {
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(logger::debug);

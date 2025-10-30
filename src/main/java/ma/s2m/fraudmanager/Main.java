@@ -165,6 +165,18 @@ public class Main {
                 if (keys != null) {
                     keys.forEach(redisService::deleteKey);
                 }
+                keys = redisService.getKeysByPattern("Merchant:*");
+                if (keys != null) {
+                    keys.forEach(redisService::deleteKey);
+                }
+                keys = redisService.getKeysByPattern("Custom:*");
+                if (keys != null) {
+                    keys.forEach(redisService::deleteKey);
+                }
+                keys = redisService.getKeysByPattern("lock:*");
+                if (keys != null) {
+                    keys.forEach(redisService::deleteKey);
+                }
                 logger.info("Redis cleanup completed.");
                 natsService.stop();
             } catch (Exception e) {
