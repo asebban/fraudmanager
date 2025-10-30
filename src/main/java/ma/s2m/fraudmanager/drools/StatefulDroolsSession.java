@@ -1,15 +1,14 @@
 package ma.s2m.fraudmanager.drools;
 
-import java.time.Duration;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
 
 import org.kie.api.event.rule.AgendaEventListener;
 import org.kie.api.runtime.KieSession;
 import org.kie.api.runtime.rule.FactHandle;
 import org.slf4j.Logger;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
-import ma.medtech.droolbuilder.utils.DurationFormatter;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
 import ma.s2m.fraudmanager.model.Measurment;
@@ -17,7 +16,6 @@ import ma.s2m.fraudmanager.model.Measurment;
 final class StatefulDroolsSession implements DroolsSession {
     private final KieSession ks;
     private String subject;
-    private Long windowSize = 0L;
     private Boolean noRules = false;
     private Logger logger = org.slf4j.LoggerFactory.getLogger(StatefulDroolsSession.class);
     private Boolean droolsProfilerEnabled = AppConfig.droolsProfilerEnabled;
@@ -37,20 +35,18 @@ final class StatefulDroolsSession implements DroolsSession {
 
         Measurment m=null;
         if (facts != null) for (Object f : facts) {
-            if (f instanceof Measurment) {
-                m = (Measurment) f;
-                ks.insert(f);
-            }
-            if (f instanceof Long) {
-                windowSize = (Long) f;
+            if (f instanceof List<?>) {
+                List<?> list = (List<?>) f;
+                for (Object item : list) {
+                    if (item instanceof Measurment) {
+                        ks.insert(item);
+                    }
+                }
             }
             if (f instanceof String) {
                 subject = (String) f;
             }
         }
-
-        Duration duration = Duration.ofMillis(windowSize);
-        String formattedDuration = DurationFormatter.formatDuration(duration);
 
         RuleProfiler ruleProfiler = null;
         if (droolsProfilerEnabled) {
@@ -59,29 +55,32 @@ final class StatefulDroolsSession implements DroolsSession {
         }
 
         if (AppConfig.droolsRulesAgendaGroupRuleTypeEnabled) {
-            ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_ALERT) + this.subject + "->" + formattedDuration).setFocus();
-            ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_COMPUTE) + this.subject + "->" + formattedDuration).setFocus();
+            ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_ALERT) + this.subject).setFocus();
+            ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_COMPUTE) + this.subject).setFocus();
             Long t0 = System.nanoTime();
-            logger.debug("Time {} Begin internal ksession execute drools to before fireAllRules for window {}", (t0 - beginExecuteDrools)/1_000_000, formattedDuration);
+            logger.debug("Time {} Internal ksession execute drools to before fireAllRules for subject {}", (t0 - beginExecuteDrools)/1_000_000, subject);
             ks.fireAllRules();
             Long t1 = System.nanoTime();
-            logger.debug("Time {} ms of execution of fireAllRules for window {}", (t1 - t0)/1_000_000, formattedDuration);
+            logger.debug("Time {} ms of execution of fireAllRules for subject {}", (t1 - t0)/1_000_000, subject);
             if (droolsProfilerEnabled) {
-                System.out.printf("********** Drools Rule Profiling Report for trx %s and window %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
+                System.out.printf("********** Drools Rule Profiling Report for trx %s and subject %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", subject);
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(System.out::println);
             }
             
        } else {
-            ks.getAgenda().getAgendaGroup(this.subject + "->" + formattedDuration).setFocus();
+            ks.getAgenda().getAgendaGroup(this.subject).setFocus();
             Long t0 = System.nanoTime();
             ks.fireAllRules();
-            logger.debug("Time {} ms of execution of fireAllRules for window {}", (System.nanoTime() - t0)/1_000_000, formattedDuration);
+            logger.debug("Time {} ms of execution of fireAllRules for subject {}", (System.nanoTime() - t0)/1_000_000, subject);
 
             if (droolsProfilerEnabled) {
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(logger::debug);
             }
         }
-        clean();
+        Long cleanTimeStart = System.nanoTime();
+        this.clean();
+        Long cleanTimeEnd = System.nanoTime();
+        logger.debug("Time {} ms of cleaning after rules execution for subject {}", (cleanTimeEnd - cleanTimeStart)/1_000_000, subject);
     }
 
     @Override public void close() { ks.dispose(); }
