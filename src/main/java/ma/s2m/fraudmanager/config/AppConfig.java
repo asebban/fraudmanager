@@ -3,9 +3,7 @@ package ma.s2m.fraudmanager.config;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
-import ma.s2m.fraudmanager.service.RedisService;
-import io.lettuce.core.RedisClient;
-import io.lettuce.core.RedisURI;
+import ma.s2m.fraudmanager.service.RocksDBService;
 import io.nats.client.Connection;
 import io.nats.client.Message;
 import io.nats.client.Nats;
@@ -33,13 +31,17 @@ public class AppConfig {
     public static String redisDatabase;
     public static int appQueueCapacity;
     public static int appThreadPoolSize;
+    public static int appThreadSubPoolSize;
     public static String ruleDeploymentDir;
     public static Boolean droolsDebugEnabled = false;
     public static Boolean droolsProfilerEnabled = false;
     public static Boolean droolsRulesAgendaGroupRuleTypeEnabled = false;
     public static String appProcessorMessagingProvider = "";
-    public static Boolean appRedisCleanOnShutdown = false;
+    public static Boolean appRocksDBCleanOnShutdown = false;
     public static String repositoryWorkspaceDirectory = "";
+    public static String rocksDBPath = "";
+    public static int rocksDBQueueSize = 10_000;
+    public static int appProcessorSubjectParallelismThreshold = 10;
 
     public AppConfig() {
         props = new Properties();
@@ -86,6 +88,10 @@ public class AppConfig {
             if (System.getenv("APP_THREAD_POOL_SIZE") != null) {
                 appThreadPoolSize = Integer.parseInt(System.getenv("APP_THREAD_POOL_SIZE"));
             }
+            appThreadSubPoolSize = Integer.parseInt(props.getProperty("app.thread.subpool.size", "16"));
+            if (System.getenv("APP_THREAD_SUBPOOL_SIZE") != null) {
+                appThreadSubPoolSize = Integer.parseInt(System.getenv("APP_THREAD_SUBPOOL_SIZE"));
+            }
             ruleDeploymentDir = props.getProperty("drools.rules.deployment.dir");
             if (System.getenv("DROOLS_RULES_DEPLOYMENT_DIR") != null) {
                 ruleDeploymentDir = System.getenv("DROOLS_RULES_DEPLOYMENT_DIR");
@@ -109,14 +115,29 @@ public class AppConfig {
             if (System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER") != null) {
                 appProcessorMessagingProvider = System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER");
             }
-            appRedisCleanOnShutdown = Boolean.parseBoolean(props.getProperty("app.redis.clean.on.shutdown", "false"));
-            if (System.getenv("APP_REDIS_CLEAN_ON_SHUTDOWN") != null) {
-                appRedisCleanOnShutdown = Boolean.parseBoolean(System.getenv("APP_REDIS_CLEAN_ON_SHUTDOWN"));
+            appRocksDBCleanOnShutdown = Boolean.parseBoolean(props.getProperty("app.rocksdb.clean.on.shutdown", "true"));
+            if (System.getenv("APP_ROCKSDB_CLEAN_ON_SHUTDOWN") != null) {
+                appRocksDBCleanOnShutdown = Boolean.parseBoolean(System.getenv("APP_ROCKSDB_CLEAN_ON_SHUTDOWN"));
             }
 
             repositoryWorkspaceDirectory = props.getProperty("drool.builder.repository.workspace.directory", "");
             if (System.getenv().get("DROOL_BUILDER_REPOSITORY_WORKSPACE_DIRECTORY") != null) {
                 repositoryWorkspaceDirectory = System.getenv().get("DROOL_BUILDER_REPOSITORY_WORKSPACE_DIRECTORY");
+            }
+
+            rocksDBPath = props.getProperty("rocksdb.path", "./rocksdb_data");
+            if (System.getenv("ROCKSDB_PATH") != null) {
+                rocksDBPath = System.getenv("ROCKSDB_PATH");
+            }
+
+            rocksDBQueueSize = Integer.parseInt(props.getProperty("rocksdb.queue.size", "10000"));
+            if (System.getenv("ROCKSDB_QUEUE_SIZE") != null) {
+                rocksDBQueueSize = Integer.parseInt(System.getenv("ROCKSDB_QUEUE_SIZE"));
+            }
+
+            appProcessorSubjectParallelismThreshold = Integer.parseInt(props.getProperty("app.processor.subject.parallelism.threshold", "10"));
+            if (System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD") != null) {
+                appProcessorSubjectParallelismThreshold = Integer.parseInt(System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD"));
             }
 
         } catch (Exception e) {
@@ -131,22 +152,16 @@ public class AppConfig {
             Connection nc = Nats.connect(NATS_PROTOCOL + natsHost + ":" + natsPort);
             BlockingQueue<Message> queue = new ArrayBlockingQueue<>(appQueueCapacity);
             ExecutorService executor = Executors.newFixedThreadPool(appThreadPoolSize);
-            FraudProcessor processor = new FraudProcessor(redisService(), nc);
-            return new NatsService(nc, queue, executor, processor, props);
+            RocksDBService rocksDBService = rocksDBService(rocksDBPath, rocksDBQueueSize);
+            FraudProcessor processor = new FraudProcessor(rocksDBService, nc);
+            return new NatsService(nc, queue, executor, processor, rocksDBService, props);
         } catch (Exception e) {
             throw new RuntimeException("Error creating NatsService", e);
         }
     }
 
-    public RedisService redisService() {
-        RedisURI redisUri = RedisURI.builder()
-            .withHost(AppConfig.redisHost)
-            .withPort(AppConfig.redisPort)
-            .withAuthentication(AppConfig.redisUser, AppConfig.redisPassword)
-            .withDatabase(0) // Spécifie la base de données 0
-            .build();
-        RedisClient client = RedisClient.create(redisUri);
-        return new RedisService(client);
+    public RocksDBService rocksDBService(String rocksDBPath, int rocksDBQueueSize) {
+        return new RocksDBService(rocksDBPath, rocksDBQueueSize);
     }
 
     private static String ruleTypeConverter(int ruleType) {

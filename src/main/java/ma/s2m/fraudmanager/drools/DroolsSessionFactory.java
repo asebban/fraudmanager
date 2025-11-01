@@ -22,6 +22,7 @@ import org.kie.api.runtime.StatelessKieSession;
 import org.slf4j.Logger;
 
 import ma.s2m.fraudmanager.config.AppConfig;
+import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
 
 // 4) Fabrique qui prépare KieContainer + crée la session voulue
 public final class DroolsSessionFactory {
@@ -29,7 +30,7 @@ public final class DroolsSessionFactory {
     private final KieContainer kieContainer;
     private Logger logger = org.slf4j.LoggerFactory.getLogger(DroolsSessionFactory.class);
 
-    private void validateDrl(KieServices ks) throws IOException {
+    private static void validateDrl(KieServices ks) throws IOException {
         Path rulesDir = Paths.get(AppConfig.repositoryWorkspaceDirectory + File.separator + "src/main/resources/com/fraudmanager/rules", "computes");
         KieFileSystem kfs = ks.newKieFileSystem();
 
@@ -47,7 +48,7 @@ public final class DroolsSessionFactory {
         if (results.hasMessages(org.kie.api.builder.Message.Level.ERROR)) {
             StringBuilder sb = new StringBuilder("Error(s) found:\n");
             results.getMessages(org.kie.api.builder.Message.Level.ERROR).forEach(m -> sb.append(" - ").append(m.getText()).append("\n"));
-            logger.error("Error(s) found: {}", sb.toString());
+            //logger.error("Error(s) found: {}", sb.toString());
             throw new IllegalStateException(sb.toString());
         }
     }
@@ -97,6 +98,11 @@ public final class DroolsSessionFactory {
             default :
                 throw new IllegalArgumentException("Unsupported mode: " + mode);
         }
+
+        if (AppConfig.droolsProfilerEnabled) {
+            session.addEventListener(new RuleProfiler());
+        }
+
 
         if (globals != null) {
             for(Map.Entry <String, Object> entry : globals.entrySet()) {

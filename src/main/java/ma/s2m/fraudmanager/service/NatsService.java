@@ -18,6 +18,7 @@ public class NatsService {
     private final BlockingQueue<Message> queue;
     private final ExecutorService executor;
     private final FraudProcessor processor;
+    private final RocksDBService rocksDBService;
     private final String topic;
     private final int threadPoolSize;
 
@@ -25,11 +26,12 @@ public class NatsService {
     private Dispatcher dispatcher;
 
     public NatsService(Connection nc, BlockingQueue<Message> queue, ExecutorService executor,
-                       FraudProcessor processor, Properties props) {
+                       FraudProcessor processor, RocksDBService rocksDBService, Properties props) {
         this.nc = nc;
         this.queue = queue;
         this.executor = executor;
         this.processor = processor;
+        this.rocksDBService = rocksDBService;
         this.topic = AppConfig.natsTopic;
         this.threadPoolSize = AppConfig.appThreadPoolSize;
     }

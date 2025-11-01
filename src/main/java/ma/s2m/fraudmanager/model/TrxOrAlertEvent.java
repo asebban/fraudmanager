@@ -3,8 +3,10 @@ package ma.s2m.fraudmanager.model;
 import ma.s2m.auth.AlertSet;
 import ma.s2m.auth.impl.VRTransactionSummary;
 
-public class TrxOrAlertEvent {
-    
+public class TrxOrAlertEvent implements java.io.Serializable {
+
+    private static final long serialVersionUID = 1L;
+
     private VRTransactionSummary transaction;
     private AlertSet alertSet = new AlertSet();
     private Long timestamp;

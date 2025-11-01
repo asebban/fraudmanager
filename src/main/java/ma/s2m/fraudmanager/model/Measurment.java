@@ -1,5 +1,6 @@
 package ma.s2m.fraudmanager.model;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -14,8 +15,10 @@ import ma.s2m.auth.AlertSet;
 
 @PropertyReactive
 @Traitable
-public class Measurment implements Cloneable {
+public class Measurment implements Cloneable, Serializable {
 
+	private static final long serialVersionUID = 1L;
+	
 	private Long window;
 	private Long windowSize;
 	private VRTransactionSummary transaction;

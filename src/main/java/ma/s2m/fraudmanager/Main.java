@@ -6,12 +6,13 @@ import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.service.NatsService;
-import ma.s2m.fraudmanager.service.RedisService;
+import ma.s2m.fraudmanager.service.RocksDBService;
 import ma.s2m.fraudmanager.util.Subject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,42 +146,89 @@ public class Main {
         RulesConfig.merchantSubjectPresent = !RulesConfig.rulesMapForMerchantSubject.isEmpty();
         RulesConfig.anySubjectPresent = !RulesConfig.rulesMapForAnySubject.isEmpty();
         RulesConfig.customSubjectPresent = !RulesConfig.rulesMapForCustomSubject.isEmpty();
+
+        RulesConfig.cardSubjectSize = RulesConfig.rulesMapForCardSubject.size();
+        RulesConfig.merchantSubjectSize = RulesConfig.rulesMapForMerchantSubject.size();
+        RulesConfig.anySubjectSize = RulesConfig.rulesMapForAnySubject.size();
+        RulesConfig.customSubjectSize = RulesConfig.rulesMapForCustomSubject.size();
+
+        RulesConfig.rulesMapArrayForCardSubject = getRulesMapArray(RulesConfig.rulesMapForCardSubject);
+        RulesConfig.rulesMapArrayForMerchantSubject = getRulesMapArray(RulesConfig.rulesMapForMerchantSubject);
+        RulesConfig.rulesMapArrayForAnySubject = getRulesMapArray(RulesConfig.rulesMapForAnySubject);
+
+        rules.forEach(rule -> {
+            String cleanedGroupName = cleanName(rule.getGroup());
+            RulesConfig.ruleGroupList.add(cleanedGroupName);
+        });
     }
 
+    private static String cleanName(String name) {
+        return name.replaceAll("[^a-zA-Z0-9]", "_");
+    }
+
+    private static List<HashMap<Long, List<RuleDefinition>>> getRulesMapArray(HashMap<Long, List<RuleDefinition>> rulesMap) {
+        List<HashMap<Long, List<RuleDefinition>>> allMaps = new ArrayList<>();
+        if (rulesMap == null || rulesMap.isEmpty()) {
+            return allMaps;
+        }
+        if (rulesMap.size() <= AppConfig.appProcessorSubjectParallelismThreshold) {
+            allMaps.add(rulesMap);
+            return allMaps;
+        }
+        // Split the rulesMap into two maps for parallel processing
+        HashMap<Long, List<RuleDefinition>> map1 = new HashMap<>();
+        HashMap<Long, List<RuleDefinition>> map2 = new HashMap<>();
+        int index = 0;
+        for (Map.Entry<Long, List<RuleDefinition>> entry : rulesMap.entrySet()) {
+            if (index % 2 == 0) {
+                map1.put(entry.getKey(), entry.getValue());
+            } else {
+                map2.put(entry.getKey(), entry.getValue());
+            }
+            index++;
+        }
+        allMaps.add(map1);
+        allMaps.add(map2);
+        return allMaps;
+    }
+    
     /**
      * Ajoute un shutdown hook pour supprimer toutes les clés commençant par "Card:" ou "Merchant"
      */
     private static void addShutdownHook() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                if (!AppConfig.appRedisCleanOnShutdown) {
-                    logger.info("Redis cleanup on shutdown is disabled. Skipping cleanup.");
+                if (!AppConfig.appRocksDBCleanOnShutdown) {
+                    logger.info("RocksDB cleanup on shutdown is disabled. Skipping cleanup.");
                     return;
                 }
-                logger.info("Intercepting shutdown signal. Cleaning up Redis keys...");
+                logger.info("Intercepting shutdown signal. Cleaning up RocksDB keys...");
                 AppConfig config = new AppConfig();
-                RedisService redisService = config.redisService();
+                RocksDBService rocksDBService = config.rocksDBService(AppConfig.rocksDBPath, AppConfig.rocksDBQueueSize);
                 // Supprimer les clés commençant par "Card:"
-                List<String> keys = redisService.getKeysByPattern("Card:*");
+                List<String> keys = rocksDBService.getKeysByPattern("Card:*");
                 if (keys != null) {
-                    keys.forEach(redisService::deleteKey);
+                    keys.forEach(rocksDBService::deleteKey);
                 }
-                keys = redisService.getKeysByPattern("Merchant:*");
+                // Supprimer les clés commençant par "Merchant:"
+                keys = rocksDBService.getKeysByPattern("Merchant:*");
                 if (keys != null) {
-                    keys.forEach(redisService::deleteKey);
+                    keys.forEach(rocksDBService::deleteKey);
                 }
-                keys = redisService.getKeysByPattern("Custom:*");
+                // Supprimer les clés commençant par "Custom:"
+                keys = rocksDBService.getKeysByPattern("Custom:*");
                 if (keys != null) {
-                    keys.forEach(redisService::deleteKey);
+                    keys.forEach(rocksDBService::deleteKey);
                 }
-                keys = redisService.getKeysByPattern("lock:*");
+                // Supprimer les clés commençant par "lock:"
+                keys = rocksDBService.getKeysByPattern("lock:*");
                 if (keys != null) {
-                    keys.forEach(redisService::deleteKey);
+                    keys.forEach(rocksDBService::deleteKey);
                 }
-                logger.info("Redis cleanup completed.");
+                logger.info("RocksDB cleanup completed.");
                 natsService.stop();
             } catch (Exception e) {
-                logger.error("Error during Redis cleanup on shutdown", e);
+                logger.error("Error during RocksDB cleanup on shutdown", e);
             }
         }));
     }

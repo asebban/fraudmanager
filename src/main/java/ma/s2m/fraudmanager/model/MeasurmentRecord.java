@@ -1,5 +1,6 @@
 package ma.s2m.fraudmanager.model;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -10,7 +11,10 @@ import java.util.Set;
 /*
  * This class is used to store the aggragated data of the transaction
  */
-public class MeasurmentRecord {
+public class MeasurmentRecord implements Serializable {
+    
+    private static final long serialVersionUID = 1L;
+
     private String valueCategory; // The valueCategory is the type of value that is being considered (Count, Amount, ...)
     private String eventObject; // The eventObject is the entity object of the event (Country, Merchant, ...)
     private String event; // The event is the operation that is being performed (Changes, Credits, Reversals, ...)

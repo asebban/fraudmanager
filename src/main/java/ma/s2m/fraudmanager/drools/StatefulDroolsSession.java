@@ -28,8 +28,6 @@ final class StatefulDroolsSession implements DroolsSession {
 
     @Override public void execute(Object... facts) {
         
-        Long beginExecuteDrools = System.nanoTime();
-
         if (noRules) {
             logger.debug("###### No rules executed, skipping processing");
             return;
@@ -61,13 +59,12 @@ final class StatefulDroolsSession implements DroolsSession {
         if (AppConfig.droolsRulesAgendaGroupRuleTypeEnabled) {
             ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_ALERT) + this.subject + "->" + formattedDuration).setFocus();
             ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_COMPUTE) + this.subject + "->" + formattedDuration).setFocus();
-            Long t0 = System.nanoTime();
-            logger.debug("Time {} Begin internal ksession execute drools to before fireAllRules for window {}", (t0 - beginExecuteDrools)/1_000_000, formattedDuration);
+            Long t0 = System.currentTimeMillis();
             ks.fireAllRules();
-            Long t1 = System.nanoTime();
-            logger.debug("Time {} ms of execution of fireAllRules for window {}", (t1 - t0)/1_000_000, formattedDuration);
+            Long t1 = System.currentTimeMillis();
+            logger.debug("Time {} [{}] trx={} ms of execution of fireAllRules for window {}", (t1 - t0), this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
             if (droolsProfilerEnabled) {
-                System.out.printf("********** Drools Rule Profiling Report for trx %s and window %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
+                System.out.printf("********** Drools Rule Profiling Report for trx %s, window %s and subject %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration, this.subject);
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(System.out::println);
             }
             
@@ -75,7 +72,7 @@ final class StatefulDroolsSession implements DroolsSession {
             ks.getAgenda().getAgendaGroup(this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.nanoTime();
             ks.fireAllRules();
-            logger.debug("Time {} ms of execution of fireAllRules for window {}", (System.nanoTime() - t0)/1_000_000, formattedDuration);
+            logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}", (System.nanoTime() - t0)/1_000_000, formattedDuration, m != null ? m.getTransaction().getTransactionNo() : "N/A", this.subject);
 
             if (droolsProfilerEnabled) {
                 if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(logger::debug);
