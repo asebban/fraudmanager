@@ -46,7 +46,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -117,29 +116,6 @@ public class FraudProcessor {
         globals.put("messageSender", messageSender);
         globals.put("typeConverter", new TypeConverter());
         return sessionFactory.newSession(SessionMode.STATEFUL, globals);
-    }
-
-    private void warmupThreadLocalSessions() {
-        int poolSize = AppConfig.appThreadSubPoolSize;
-        logger.debug("Pre-warming {} Drools sessions for thread pool...", poolSize);
-
-        CompletableFuture<?>[] futures = IntStream.range(0, poolSize)
-            .mapToObj(i -> CompletableFuture.runAsync(
-                () -> {
-                    try {
-                        DroolsSession s = threadLocalSession.get(); // Force création
-                        logger.debug("Drools session initialized for thread: {}", Thread.currentThread().getName());
-                    } catch (Exception e) {
-                        logger.error("Failed to warm up session for thread", e);
-                    }
-                },
-                executor
-            ))
-            .toArray(CompletableFuture[]::new);
-
-        CompletableFuture.allOf(futures).join();
-
-        logger.debug("All {} Drools sessions are pre-warmed and ready!", allSessions.size());
     }
 
     @SuppressWarnings("deprecation")
