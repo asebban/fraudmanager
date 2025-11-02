@@ -207,7 +207,7 @@ public class FraudProcessor {
         m.setTransaction(new VRTransactionSummary(dummyTrx));
         try {
             // on warm-up la session fournie
-            executeSession(10000L, m, subject, s);
+            executeSession(10000L, m, subject);
         } catch (Exception e) {
             e.printStackTrace();
         }
