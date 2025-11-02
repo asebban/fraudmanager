@@ -2,15 +2,20 @@ package ma.s2m.fraudmanager.drools;
 
 import java.time.Duration;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
 
 import org.kie.api.event.rule.AgendaEventListener;
 import org.kie.api.runtime.KieSession;
+import org.kie.api.runtime.rule.EntryPoint;
 import org.kie.api.runtime.rule.FactHandle;
 import org.slf4j.Logger;
-import ma.medtech.droolbuilder.rules.RuleDefinition;
+
 import ma.medtech.droolbuilder.utils.DurationFormatter;
 import ma.s2m.fraudmanager.config.AppConfig;
+import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
 import ma.s2m.fraudmanager.model.Measurment;
 
@@ -21,8 +26,23 @@ final class StatefulDroolsSession implements DroolsSession {
     private Boolean noRules = false;
     private Logger logger = org.slf4j.LoggerFactory.getLogger(StatefulDroolsSession.class);
     private Boolean droolsProfilerEnabled = AppConfig.droolsProfilerEnabled;
+    private Map<String, EntryPoint> entryPointsMap = new HashMap<>();
+    private Map<FactHandle, EntryPoint> insertedHandles = new HashMap<>();
+    private RuleProfiler ruleProfiler = new RuleProfiler();
 
-    StatefulDroolsSession(KieSession ks) { this.ks = ks; }
+    public StatefulDroolsSession(KieSession ks) { 
+        this.ks = ks;
+        for (String groupName : RulesConfig.ruleGroupSet) {
+            EntryPoint entryPoint = ks.getEntryPoint(groupName);
+            if (entryPoint != null) {
+                entryPointsMap.put(groupName, entryPoint);
+            }
+        }
+        if (droolsProfilerEnabled) {
+            this.ks.addEventListener(this.ruleProfiler);
+        }
+
+    }
 
     @Override public void setGlobal(String name, Object value) { ks.setGlobal(name, value); }
 
@@ -37,7 +57,6 @@ final class StatefulDroolsSession implements DroolsSession {
         if (facts != null) for (Object f : facts) {
             if (f instanceof Measurment) {
                 m = (Measurment) f;
-                ks.insert(f);
             }
             if (f instanceof Long) {
                 windowSize = (Long) f;
@@ -50,35 +69,60 @@ final class StatefulDroolsSession implements DroolsSession {
         Duration duration = Duration.ofMillis(windowSize);
         String formattedDuration = DurationFormatter.formatDuration(duration);
 
-        RuleProfiler ruleProfiler = null;
         if (droolsProfilerEnabled) {
-            ruleProfiler = (RuleProfiler) getAgendaEventListener();
-            if (ruleProfiler != null) ruleProfiler.reset();
+            this.ruleProfiler.reset();
+        }
+
+        Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(this.subject + "/" + windowSize);
+        if (groupSet != null) {
+            for (String groupName : groupSet) {
+                EntryPoint ep = this.entryPointsMap.get(groupName);
+                if (ep != null) {
+                    logger.debug("Inserting into EntryPoint: {}", groupName);
+                    FactHandle fh = ep.insert(m);
+                    logger.debug("FactHandle: {}", fh);
+                    insertedHandles.put(fh, ep);
+                } else {
+                    logger.warn("EntryPoint not found for group name: {}", groupName);
+                }
+            }
         }
 
         if (AppConfig.droolsRulesAgendaGroupRuleTypeEnabled) {
-            ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_ALERT) + this.subject + "->" + formattedDuration).setFocus();
-            ks.getAgenda().getAgendaGroup(AppConfig.ruleTypePrefix(RuleDefinition.RULE_TYPE_COMPUTE) + this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.currentTimeMillis();
             ks.fireAllRules();
             Long t1 = System.currentTimeMillis();
             logger.debug("Time {} [{}] trx={} ms of execution of fireAllRules for window {}", (t1 - t0), this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
             if (droolsProfilerEnabled) {
-                System.out.printf("********** Drools Rule Profiling Report for trx %s, window %s and subject %s:\n", m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration, this.subject);
-                if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(System.out::println);
+                final Measurment finalM = m;
+                this.ruleProfiler.reportTop(10).forEach(s -> {
+                    logger.debug("trx {} - win {} : {} : {}", finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration, this.subject, s);
+                });
             }
             
        } else {
-            ks.getAgenda().getAgendaGroup(this.subject + "->" + formattedDuration).setFocus();
+            //ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_ALERT + ":" + this.subject + "->" + formattedDuration).setFocus();
+            //ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_COMPUTE + ":" + this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.nanoTime();
             ks.fireAllRules();
             logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}", (System.nanoTime() - t0)/1_000_000, formattedDuration, m != null ? m.getTransaction().getTransactionNo() : "N/A", this.subject);
 
             if (droolsProfilerEnabled) {
-                if (ruleProfiler != null) ruleProfiler.reportTop(10).forEach(logger::debug);
+                this.ruleProfiler.reportTop(10).forEach(logger::debug);
             }
         }
-        clean();
+        cleanEntryPoints();
+    }
+
+    private void cleanEntryPoints() {
+        for (Map.Entry<FactHandle, EntryPoint> entry : insertedHandles.entrySet()) {
+            FactHandle handle = entry.getKey();
+            EntryPoint ep = entry.getValue();
+            if (handle != null) {
+                ep.delete(handle);
+            }
+        }
+        insertedHandles.clear();    
     }
 
     @Override public void close() { ks.dispose(); }

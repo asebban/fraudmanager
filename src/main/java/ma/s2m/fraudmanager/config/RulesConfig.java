@@ -2,7 +2,9 @@ package ma.s2m.fraudmanager.config;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import ma.medtech.droolbuilder.rules.RuleDefinition;
 
@@ -27,8 +29,11 @@ public class RulesConfig {
     public static Integer customSubjectSize = 0;
     public static List<HashMap<String, HashMap<Long, List<RuleDefinition>>>> rulesMapArrayForCustomSubject = new ArrayList<>();
 
-    public static List<String> ruleGroupList = new ArrayList<>();
+    public static Set<String> ruleGroupSet = new HashSet<>();
+    public static HashMap<String, Set<String>> ruleGroupsPerWindowSizeMap = new HashMap<>();
     public static Integer alertRulesCount = 0;
     public static String extendedVersion = "";
+
+    public static List<RuleDefinition> allrules = new ArrayList<>();
 
 }

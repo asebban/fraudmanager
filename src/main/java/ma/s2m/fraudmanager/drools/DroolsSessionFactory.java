@@ -22,8 +22,6 @@ import org.kie.api.runtime.StatelessKieSession;
 import org.slf4j.Logger;
 
 import ma.s2m.fraudmanager.config.AppConfig;
-import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
-
 // 4) Fabrique qui prépare KieContainer + crée la session voulue
 public final class DroolsSessionFactory {
 
@@ -98,11 +96,6 @@ public final class DroolsSessionFactory {
             default :
                 throw new IllegalArgumentException("Unsupported mode: " + mode);
         }
-
-        if (AppConfig.droolsProfilerEnabled) {
-            session.addEventListener(new RuleProfiler());
-        }
-
 
         if (globals != null) {
             for(Map.Entry <String, Object> entry : globals.entrySet()) {

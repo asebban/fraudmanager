@@ -3,6 +3,7 @@ package ma.s2m.fraudmanager;
 import ma.medtech.droolbuilder.publisher.providers.DroolBuilderRuleProviderFactory;
 import ma.medtech.droolbuilder.publisher.providers.IDroolBuilderRuleProvider;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
+import ma.medtech.droolbuilder.utils.Utils;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.service.NatsService;
@@ -11,8 +12,10 @@ import ma.s2m.fraudmanager.util.Subject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,6 +74,7 @@ public class Main {
             throw new RuntimeException("No rules found");
         }
 
+        RulesConfig.allrules = rules;
         RulesConfig.extendedVersion = versionToDeploy;
         logger.debug("Total rules fetched: " + rules.size());
         
@@ -157,8 +161,15 @@ public class Main {
         RulesConfig.rulesMapArrayForAnySubject = getRulesMapArray(RulesConfig.rulesMapForAnySubject);
 
         rules.forEach(rule -> {
-            String cleanedGroupName = cleanName(rule.getGroup());
-            RulesConfig.ruleGroupList.add(cleanedGroupName);
+            String cleanedGroupName = Utils.cleanGroupName(rule.getGroup());
+            RulesConfig.ruleGroupSet.add(cleanedGroupName);
+            Long windowSize = rule.getTimeFrame() * rule.getTimeframeUnit();
+            Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(rule.getSubject() + "/" + windowSize);
+            if (groupSet == null) {
+                groupSet = new HashSet<>();
+            }
+            groupSet.add(cleanedGroupName);
+            RulesConfig.ruleGroupsPerWindowSizeMap.put(rule.getSubject() + "/" + windowSize, groupSet);
         });
     }
 
