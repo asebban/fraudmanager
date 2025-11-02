@@ -41,6 +41,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,6 +67,9 @@ public class FraudProcessor {
     private IMessageSender messageSender;
     private DroolsSessionFactory sessionFactory;
     private final Set<DroolsSession> allSessions = ConcurrentHashMap.newKeySet();
+    private int poolSizePerSubject = AppConfig.appThreadSubPoolSize;
+    private Map<String, BlockingQueue<DroolsSession>> sessionPools = new ConcurrentHashMap<>();
+
     private final ThreadLocal<DroolsSession> threadLocalSession = ThreadLocal.withInitial(() -> {
         DroolsSession s = createNewDroolsSession();   // méthode ci-dessous
         allSessions.add(s);
@@ -89,7 +94,29 @@ public class FraudProcessor {
         this.natsConnection = natsConnection;
         this.keyProcessor = new KeyProcessor(rocksDBService);
         initProcessor();
-        warmupThreadLocalSessions();
+        initializeSessionPools();
+    }
+
+    private void initializeSessionPools() {
+        Set<String> subjects = Set.of(Subject.CARD, Subject.MERCHANT, Subject.CUSTOM);
+        for (String subject : subjects) {
+            BlockingQueue<DroolsSession> queue = new ArrayBlockingQueue<>(poolSizePerSubject);
+            for (int i = 0; i < poolSizePerSubject; i++) {
+                DroolsSession session = createSessionForSubject(subject);
+                queue.offer(session);
+            }
+            sessionPools.put(subject, queue);
+            logger.info("Initialized Drools session pool for subject '{}' with {} sessions", subject, poolSizePerSubject);
+        }
+    }
+
+    private DroolsSession createSessionForSubject(String subject) {
+        Map<String, Object> globals = new HashMap<>();
+        globals.put("timeConverter", new TimeConversion());
+        globals.put("externalSystem", new ExternalSystem());
+        globals.put("messageSender", messageSender);
+        globals.put("typeConverter", new TypeConverter());
+        return sessionFactory.newSession(SessionMode.STATEFUL, globals);
     }
 
     private void warmupThreadLocalSessions() {
@@ -137,20 +164,41 @@ public class FraudProcessor {
             this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
     }
 
-    private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject) throws Exception {
-        DroolsSession s = this.threadLocalSession.get();
-        return executeSession(windowSize, measurment, subject, s);
+    private DroolsSession acquireSession(String subject) throws InterruptedException {
+        BlockingQueue<DroolsSession> pool = sessionPools.get(subject);
+        if (pool == null) {
+            throw new IllegalArgumentException("No session pool for subject: " + subject);
+        }
+        return pool.take(); // Bloque si vide
     }
 
-    private DroolsSession executeSession(Long windowSize, Measurment measurment, String subject, DroolsSession s) throws Exception {
+    private void releaseSession(String subject, DroolsSession session) {
+        if (session != null) {
+            try {
+                session.clean(); // Nettoie les faits
+                sessionPools.get(subject).offer(session);
+            } catch (Exception e) {
+                logger.error("Error returning session to pool for subject: {}", subject, e);
+                // Recrée une session en cas d'erreur
+                sessionPools.get(subject).offer(createSessionForSubject(subject));
+            }
+        }
+    }
+
+    private void executeSession(Long windowSize, Measurment measurment, String subject) throws Exception {
         if (measurment == null) {
             throw new IllegalArgumentException("executeSession: Measurment cannot be null");
         }
         if (measurment.getAlertSet() == null) {
             measurment.setAlertSet(new AlertSet());
         }
-        s.execute(measurment, windowSize, subject);
-        return s;
+        DroolsSession session = null;
+        try {
+            session = acquireSession(subject);
+            session.execute(measurment, windowSize, subject);
+        } finally {
+            releaseSession(subject, session);
+        }
     }
 
     private void warmUpDrools(String subject, DroolsSession s) {
@@ -994,14 +1042,14 @@ public class FraudProcessor {
             }
         }
 
-        try {
-            for (DroolsSession s : allSessions) {
-                try { s.dispose(); } catch (Exception ignore) {}
-            }
-        } finally {
-            allSessions.clear();
-            threadLocalSession.remove();
-        }
+        sessionPools.values().forEach(queue -> {
+            queue.forEach(session -> {
+                try { session.dispose(); } catch (Exception ignore) {}
+            });
+            queue.clear();
+        });
+        sessionPools.clear();
+        logger.info("FraudProcessor shut down.");
 
     }
 
