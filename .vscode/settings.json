@@ -1,0 +1,26 @@
+{
+  "java.configuration.runtimes": [
+    {
+      "name": "JavaSE-25",
+      "path": "C:\\Program Files\\Java\\jdk-25",
+      "default": true
+    }
+  ],
+
+  "java.jdt.ls.java.home": "C:\\Program Files\\Java\\jdk-25",
+
+  // Force Maven lancé via l'extension à utiliser JDK 25
+  "maven.terminal.customEnv": [
+    {
+      "environmentVariable": "JAVA_HOME",
+      "value": "C:\\Program Files\\Java\\jdk-25"
+    }
+  ],
+  "maven.executable.path": "mvn",
+
+  // Très important : forcer le terminal intégré de CE projet à utiliser JDK 25
+  "terminal.integrated.env.windows": {
+    "JAVA_HOME": "C:\\Program Files\\Java\\jdk-25",
+    "PATH": "C:\\Program Files\\Java\\jdk-25\\bin;${env:PATH}"
+  }
+}

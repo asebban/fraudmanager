@@ -151,7 +151,7 @@ public class AppConfig {
         try {
             Connection nc = Nats.connect(NATS_PROTOCOL + natsHost + ":" + natsPort);
             BlockingQueue<Message> queue = new ArrayBlockingQueue<>(appQueueCapacity);
-            ExecutorService executor = Executors.newFixedThreadPool(appThreadPoolSize);
+            ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
             RocksDBService rocksDBService = rocksDBService(rocksDBPath, rocksDBQueueSize);
             FraudProcessor processor = new FraudProcessor(rocksDBService, nc);
             return new NatsService(nc, queue, executor, processor, rocksDBService, props);

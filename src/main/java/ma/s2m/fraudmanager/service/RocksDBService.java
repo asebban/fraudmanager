@@ -266,6 +266,7 @@ public class RocksDBService {
             RocksDB.loadLibrary();
         }
 
+        @SuppressWarnings("resource")
         private AsyncRocksDbWriter(String dbPath, int queueSize) {
             try {
                 Options options = new Options()
@@ -305,6 +306,7 @@ public class RocksDBService {
 
         // put objet -> sérialisation dans le writer
         public boolean submitPutObject(byte[] key, Object valueObj) {
+            logger.debug("[key = {}] rocksDB queue size is {}", key, queue.size());
             return queue.offer(WriteRequest.putObject(key, valueObj));
         }
 

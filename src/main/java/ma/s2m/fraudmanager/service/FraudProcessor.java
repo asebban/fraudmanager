@@ -54,7 +54,6 @@ public class FraudProcessor {
     private static final String KEY_SEPARATOR = "/";
     private static final String CARD_KEY_PREFIX = Subject.CARD + ":";
     private static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + ":";
-    private static final String ANY_KEY_PREFIX = Subject.ANY + ":";
     private static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + ":";
 
 
@@ -62,20 +61,11 @@ public class FraudProcessor {
     private final RocksDBService rocksDBService;
     private final Connection natsConnection;
     private final KeyProcessor keyProcessor;
-    private final ExecutorService executor = Executors.newFixedThreadPool(AppConfig.appThreadSubPoolSize); // Pool pour traitement parallèle
+    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor(); // Pool pour traitement parallèle
     private IMessageSender messageSender;
     private DroolsSessionFactory sessionFactory;
-    private final Set<DroolsSession> allSessions = ConcurrentHashMap.newKeySet();
     private int poolSizePerSubject = AppConfig.appThreadSubPoolSize;
     private Map<String, BlockingQueue<DroolsSession>> sessionPools = new ConcurrentHashMap<>();
-
-    private final ThreadLocal<DroolsSession> threadLocalSession = ThreadLocal.withInitial(() -> {
-        DroolsSession s = createNewDroolsSession();   // méthode ci-dessous
-        allSessions.add(s);
-        // warm-up léger par thread (optionnel mais recommandé)
-        try { warmUpDrools(Subject.CARD, s); } catch (Exception ignore) {}
-        return s;
-    });
 
     private DroolsSession createNewDroolsSession() {
         HashMap<String, Object> globals = new HashMap<>();
@@ -161,7 +151,7 @@ public class FraudProcessor {
         }
     }
 
-    private void executeSession(Long windowSize, Measurment measurment, String subject) throws Exception {
+    private void executeSession(Long windowSize, Measurment measurment, String subject, String correlationId) throws Exception {
         if (measurment == null) {
             throw new IllegalArgumentException("executeSession: Measurment cannot be null");
         }
@@ -171,24 +161,24 @@ public class FraudProcessor {
         DroolsSession session = null;
         try {
             session = acquireSession(subject);
-            session.execute(measurment, windowSize, subject);
+            session.execute(measurment, windowSize, subject, correlationId);
         } finally {
             releaseSession(subject, session);
         }
     }
 
+    @SuppressWarnings("unused")
     private void warmUpDrools(String subject, DroolsSession s) {
         VirtualRecordTransaction dummyTrx = TransactionDummyHelper.dummyTransaction();
         Measurment m = createNewMeasument("card-1", subject, 10000L);
         m.setTransaction(new VRTransactionSummary(dummyTrx));
         try {
             // on warm-up la session fournie
-            executeSession(10000L, m, subject);
+            executeSession(10000L, m, subject, "XXXXX");
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
-
 
     private Measurment createNewMeasument(String key, String subject, Long windowSize) {
         Measurment measurment = new Measurment();
@@ -339,7 +329,7 @@ public class FraudProcessor {
 
                     if (trxEntry.getRecordDelta().get(recordKey).getArgSetDelta() != null && trxEntry.getRecordDelta().get(recordKey).getArgSetDelta() != null && !trxEntry.getRecordDelta().get(recordKey).getArgSetDelta().isEmpty()) {
                         for (String argToRemove : trxEntry.getRecordDelta().get(recordKey).getArgSetDelta()) {
-                            record.removeFromArgList(argToRemove);
+                            record.removeFromArgSet(argToRemove);
                         }
                     }
 
@@ -539,7 +529,7 @@ public class FraudProcessor {
         try {
             // update the indicators in the measurment (with drools)
             Long beginExecute = System.currentTimeMillis();
-            executeSession(windowSize, measurment, subject);
+            executeSession(windowSize, measurment, subject, correlationId);
             Long endExecute = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration",
                     (endExecute - beginExecute), correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize), key);
@@ -762,9 +752,6 @@ public class FraudProcessor {
             if (merchantProcessingFutures != null) {
                 futures.addAll(merchantProcessingFutures);
             }
-            /*if (anyProcessing != null) {
-                futures.add(anyProcessing);
-            }*/
             if (customProcessingFutures != null && !customProcessingFutures.isEmpty()) {
                 futures.addAll(customProcessingFutures);
             }
@@ -963,11 +950,7 @@ public class FraudProcessor {
             alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
             measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
             measurment.setTransaction(null); // clear transaction to avoid serialization issues
-
-            Long stateUpdateStart = System.currentTimeMillis();
             rocksDBService.setMeasurmentByKey(eventKey + KEY_SEPARATOR + measurment.getWindowSize(), measurment);
-            Long stateUpdateEnd = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCustomEvent: State update time", (stateUpdateEnd - stateUpdateStart), correlationId, Subject.CUSTOM, Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, customEvent.getTransaction().getTransactionNo());            
         }
 
         customEvent.setAlertSet(alertSet);

@@ -13,6 +13,7 @@ import org.kie.api.runtime.rule.EntryPoint;
 import org.kie.api.runtime.rule.FactHandle;
 import org.slf4j.Logger;
 
+import ma.medtech.droolbuilder.rules.Subject;
 import ma.medtech.droolbuilder.utils.DurationFormatter;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
@@ -29,6 +30,7 @@ final class StatefulDroolsSession implements DroolsSession {
     private Map<String, EntryPoint> entryPointsMap = new HashMap<>();
     private Map<FactHandle, EntryPoint> insertedHandles = new HashMap<>();
     private RuleProfiler ruleProfiler = new RuleProfiler();
+    private String correlationId = "";
 
     public StatefulDroolsSession(KieSession ks) { 
         this.ks = ks;
@@ -62,7 +64,13 @@ final class StatefulDroolsSession implements DroolsSession {
                 windowSize = (Long) f;
             }
             if (f instanceof String) {
-                subject = (String) f;
+                String s = (String) f;
+                if (s != null && s != "" && s != Subject.CARD && s != Subject.MERCHANT && !s.startsWith(Subject.CUSTOM) && s != Subject.ANY) {
+                    this.correlationId = s;
+                }
+                else {
+                    this.subject = (String) f;
+                }
             }
         }
 
@@ -78,9 +86,7 @@ final class StatefulDroolsSession implements DroolsSession {
             for (String groupName : groupSet) {
                 EntryPoint ep = this.entryPointsMap.get(groupName);
                 if (ep != null) {
-                    logger.debug("Inserting into EntryPoint: {}", groupName);
                     FactHandle fh = ep.insert(m);
-                    logger.debug("FactHandle: {}", fh);
                     insertedHandles.put(fh, ep);
                 } else {
                     logger.warn("EntryPoint not found for group name: {}", groupName);
@@ -92,11 +98,12 @@ final class StatefulDroolsSession implements DroolsSession {
             Long t0 = System.currentTimeMillis();
             ks.fireAllRules();
             Long t1 = System.currentTimeMillis();
-            logger.debug("Time {} [{}] trx={} ms of execution of fireAllRules for window {}", (t1 - t0), this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
+            logger.debug("Time {} ms [{}] [{}] trx={} ms of execution of fireAllRules for window {}", (t1 - t0), this.correlationId, this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
             if (droolsProfilerEnabled) {
                 final Measurment finalM = m;
+                final String cId = this.correlationId;
                 this.ruleProfiler.reportTop(10).forEach(s -> {
-                    logger.debug("trx {} - win {} : {} : {}", finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration, this.subject, s);
+                    logger.debug("[{}] trx {} - win {} : {} : {}", cId, finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration, this.subject, s);
                 });
             }
             
@@ -165,6 +172,12 @@ final class StatefulDroolsSession implements DroolsSession {
         ks.dispose();
     }
 
-    
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
+    }
+
+    public String getCorrelationId() {
+        return this.correlationId;
+    }
 
 }

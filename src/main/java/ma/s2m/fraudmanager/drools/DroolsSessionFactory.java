@@ -19,14 +19,12 @@ import org.kie.api.io.Resource;
 import org.kie.api.runtime.KieContainer;
 import org.kie.api.runtime.KieSession;
 import org.kie.api.runtime.StatelessKieSession;
-import org.slf4j.Logger;
 
 import ma.s2m.fraudmanager.config.AppConfig;
 // 4) Fabrique qui prépare KieContainer + crée la session voulue
 public final class DroolsSessionFactory {
 
     private final KieContainer kieContainer;
-    private Logger logger = org.slf4j.LoggerFactory.getLogger(DroolsSessionFactory.class);
 
     private static void validateDrl(KieServices ks) throws IOException {
         Path rulesDir = Paths.get(AppConfig.repositoryWorkspaceDirectory + File.separator + "src/main/resources/com/fraudmanager/rules", "computes");

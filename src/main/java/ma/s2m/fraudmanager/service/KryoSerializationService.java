@@ -24,8 +24,19 @@ public class KryoSerializationService {
     
     private static final Logger logger = LoggerFactory.getLogger(KryoSerializationService.class);
     
-    // Pool de Kryo instances pour la thread-safety
-    private static final ThreadLocal<Kryo> kryoThreadLocal = ThreadLocal.withInitial(KryoSerializationService::createKryo);
+    // ScopedValue for Kryo instances (virtual thread compatible)
+    private static final ScopedValue<Kryo> kryoScoped = ScopedValue.newInstance();
+    
+    /**
+     * Gets or creates a Kryo instance for the current scope
+     */
+    private static Kryo getKryo() {
+        Kryo kryo = kryoScoped.orElse(null);
+        if (kryo == null) {
+            kryo = createKryo();
+        }
+        return kryo;
+    }
     
     /**
      * Crée et configure une instance Kryo
@@ -90,7 +101,7 @@ public class KryoSerializationService {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
              Output output = new Output(baos)) {
             
-            Kryo kryo = kryoThreadLocal.get();
+            Kryo kryo = getKryo();
             kryo.writeObject(output, obj);
             output.flush();
             
@@ -113,7 +124,7 @@ public class KryoSerializationService {
         try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
              Input input = new Input(bais)) {
             
-            Kryo kryo = kryoThreadLocal.get();
+            Kryo kryo = getKryo();
             return kryo.readObject(input, clazz);
             
         } catch (Exception e) {
@@ -133,7 +144,7 @@ public class KryoSerializationService {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
              Output output = new Output(baos)) {
             
-            Kryo kryo = kryoThreadLocal.get();
+            Kryo kryo = getKryo();
             kryo.writeObject(output, map);
             output.flush();
             
@@ -157,7 +168,7 @@ public class KryoSerializationService {
         try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
              Input input = new Input(bais)) {
             
-            Kryo kryo = kryoThreadLocal.get();
+            Kryo kryo = getKryo();
             Object result = kryo.readObject(input, HashMap.class);
             
             return (Map<String, Measurment>) result;
@@ -180,7 +191,7 @@ public class KryoSerializationService {
         try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
              Input input = new Input(bais)) {
             
-            Kryo kryo = kryoThreadLocal.get();
+            Kryo kryo = getKryo();
             Object result = kryo.readObject(input, HashMap.class);
             
             return (Map<Long, Measurment>) result;
@@ -192,9 +203,10 @@ public class KryoSerializationService {
     }
     
     /**
-     * Nettoie les ressources thread-local (à appeler à la fin des threads)
+     * Cleanup method - no longer needed with ScopedValue
+     * Kept for backward compatibility but does nothing
      */
     public static void cleanup() {
-        kryoThreadLocal.remove();
+        // No-op: ScopedValue automatically cleans up when scope ends
     }
 }
