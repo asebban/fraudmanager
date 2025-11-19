@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "Main",
+      "request": "launch",
+      "mainClass": "ma.s2m.fraudmanager.Main",
+      "projectName": "fraudmanager"
+    },
+    {
+      "type": "java",
+      "name": "Launch FraudManager",
+      "request": "launch",
+      "mainClass": "ma.s2m.fraudmanager.Main",
+      "projectName": "FraudManager",
+      "vmArgs": "--enable-native-access=ALL-UNNAMED"
+    }
+  ]
+}

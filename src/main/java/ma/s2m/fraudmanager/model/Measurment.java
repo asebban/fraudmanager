@@ -6,7 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.drools.core.factmodel.traits.Traitable;
+import org.drools.base.factmodel.traits.Traitable;
 import org.kie.api.definition.type.PropertyReactive;
 
 

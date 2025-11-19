@@ -72,12 +72,12 @@
         <dependency>
             <groupId>ma.medtech</groupId>
             <artifactId>drool-builder</artifactId>
-            <version>2.1.4-SNAPSHOT</version>
+            <version>2.1.5-FLINKLESS-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>auth</artifactId>
-            <version>1.10.0-RELEASE</version>
+            <version>2.5.0-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>

@@ -3,7 +3,7 @@ package ma.s2m.fraudmanager.drools.listeners;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import org.kie.api.event.rule.*;
-import org.drools.core.definitions.rule.impl.RuleImpl;
+import org.drools.base.definitions.rule.impl.RuleImpl ;
 import org.kie.api.definition.rule.Rule;
 import java.util.function.Supplier;
 

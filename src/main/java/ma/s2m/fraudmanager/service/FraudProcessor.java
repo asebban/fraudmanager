@@ -191,15 +191,15 @@ public class FraudProcessor {
 
     private AlertSet newAlertSet(TrxOrAlertEvent event, String subject) {
         AlertSet alertSet = new AlertSet();
-        alertSet.setSubject(subject);
         switch(subject) {
             case Subject.CARD:
-                alertSet.setCardId(event.getTransaction().getCardId());
+                alertSet.setKey(event.getTransaction().getCardId());
                 break;
             case Subject.MERCHANT:
-                alertSet.setMerchantId(event.getTransaction().getMerchant());
+                alertSet.setKey(event.getTransaction().getMerchant());
                 break;
-            case Subject.ANY:
+            case Subject.CUSTOM:
+                alertSet.setKey(event.getAlertSet().getKey());
                 break;
             default:
                 logger.warn("### [{}] ProcessFunction Unknown subject type: {} for transaction: {}", event.getCorrelationId(), subject, event.getTransaction().getTransactionNo());
@@ -488,7 +488,7 @@ public class FraudProcessor {
     private Measurment processWindowSize(String key, Measurment measurment, Long windowSize, TrxOrAlertEvent event, Long arrivalTime, String correlationId, String subject) {
 
         VRTransactionSummary transaction = event.getTransaction();
-        transaction.setTransmissionDateTime(arrivalTime);
+        transaction.setTimestamp(arrivalTime);
 
         if (measurment == null) {
             measurment = createNewMeasument(key, subject, windowSize);
@@ -542,7 +542,7 @@ public class FraudProcessor {
         TrxEntry trxEntry = new TrxEntry();
         trxEntry.setTxNo(transaction.getTransactionNo());
         trxEntry.setTx(null);
-        trxEntry.setEventTimeMs(transaction.getTransmissionDateTime());
+        trxEntry.setEventTimeMs(transaction.getTimestamp());
 
         Long beginCreateDelta = System.currentTimeMillis();
         trxEntry.setRecordDelta(createRecordsDelta(initialMeasurment, measurment));
@@ -573,7 +573,6 @@ public class FraudProcessor {
         }
         alertSet.setTransactionNo(event.getTransaction().getTransactionNo());
         alertSet.setTopic(event.getTransaction().getTopic());
-        alertSet.setSubject(subject);
 
         if (alertSet.hasAlerts()) {
             alertSet.setAlertStatus(AlertSet.ALERT);
@@ -583,11 +582,13 @@ public class FraudProcessor {
 
         switch(subject) {
             case Subject.CARD:
-                alertSet.setCardId(event.getTransaction().getCardId());
+                alertSet.setKey(event.getTransaction().getCardId());
                 break;
             case Subject.MERCHANT:
-                alertSet.setMerchantId(event.getTransaction().getMerchant());
+                alertSet.setKey(event.getTransaction().getMerchant());
                 break;
+            case Subject.CUSTOM:
+                alertSet.setKey(event.getAlertSet().getKey());
             default:
                 break;
         }
@@ -662,7 +663,7 @@ public class FraudProcessor {
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Deserialization Time", (afterDeserialize - beforeDeserialize), correlationId, Thread.currentThread().getName(), request.getContent().getTransactionNo());
             VRTransactionSummary tx = new VRTransactionSummary(request.getContent());
             tx.setTopic(topic);
-            tx.setTransmissionDateTime(arrivalTime);
+            tx.setTimestamp(arrivalTime);
 
             long recv0 = System.currentTimeMillis();         
             String sClientTs     = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-client-publish-ts-ms");
@@ -693,7 +694,7 @@ public class FraudProcessor {
                     cardProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             return keyProcessor.executeWithLock(cardKey, (key) -> {
-                                TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, ruleMapForCard);
+                                TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, ruleMapForCard);
                                 return cardEvent;
                             });
                         } catch (Exception e) {
@@ -711,7 +712,7 @@ public class FraudProcessor {
                     merchantProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             return keyProcessor.executeWithLock(merchantKey, (key) -> {
-                                TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, ruleMapForMerchant);
+                                TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, ruleMapForMerchant);
                                 return merchantEvent;
                             });
                         } catch (Exception e) {
@@ -727,15 +728,17 @@ public class FraudProcessor {
             List<CompletableFuture<TrxOrAlertEvent>> customProcessingFutures = new ArrayList<>();
             if (RulesConfig.customSubjectPresent) {
                 for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
+                    String keySpec = customSubject;
+                    String keyValue = event.getTransaction().getKey(keySpec);
+                    String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
                     customProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
-                            String customKey = CUSTOM_KEY_PREFIX + customSubject;
-                            return keyProcessor.executeWithLock(customKey, (key) -> {
-                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, RulesConfig.rulesMapForCustomSubject.get(customSubject));
+                            return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
+                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject));
                                 return customEvent;
                             });
                         } catch (Exception e) {
-                            logger.error("Error processing custom subject key: {}", customSubject, e);
+                            logger.error("Error processing custom subject key: {}", customSubjectKey, e);
                             Thread.currentThread().interrupt();
                             return null;
                         }
@@ -911,21 +914,9 @@ public class FraudProcessor {
      * @param correlationId The correlation ID for logging.
      * @return The processed custom event.
      */
-    private TrxOrAlertEvent processCustomEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId) {
+    private TrxOrAlertEvent processCustomEvent(TrxOrAlertEvent event, String key, String customSubject, Long arrivalTime, String correlationId) {
         AlertSet alertSet = newAlertSet(event, Subject.ANY);
         TrxOrAlertEvent customEvent = buildEvent(event, alertSet);
-        String customSubject = key;
-        VRTransactionSummary tx = event.getTransaction();
-        
-        String cleanedCustomSubject = VRTransactionSummary.cleanCustomSubject(customSubject);
-
-        try {
-            key = tx.getKey(key);
-            key = cleanedCustomSubject + "/" + key;
-        } catch (IllegalArgumentException | NoSuchFieldException e) {
-            e.printStackTrace();
-        }
-
         String eventKey = CUSTOM_KEY_PREFIX + key;
 
         Map<Long, List<RuleDefinition>> rulesMapForCustomSubject = RulesConfig.rulesMapForCustomSubject.get(customSubject);
@@ -967,14 +958,14 @@ public class FraudProcessor {
      * @param subject       The subject of the event.
      * @return The processed event.
      */
-    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, Map<Long, List<RuleDefinition>> ruleMap) {
+    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap) {
         switch(subject) {
             case Subject.CARD:
                 return processCardEvent(event, key, arrivalTime, correlationId, ruleMap);
             case Subject.MERCHANT:
                 return processMerchantEvent(event, key, arrivalTime, correlationId, ruleMap);
             case Subject.CUSTOM:
-                return processCustomEvent(event, key, arrivalTime, correlationId);
+                return processCustomEvent(event, key, customSubject, arrivalTime, correlationId);
             default:
                 logger.error("Unknown subject type: {}", subject);
                 return event;

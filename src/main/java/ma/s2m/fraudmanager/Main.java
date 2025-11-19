@@ -91,7 +91,6 @@ public class Main {
         RulesConfig.alertRulesCount = alertRulesCount;
         RulesConfig.rulesMapForCardSubject = new HashMap<>();
         RulesConfig.rulesMapForMerchantSubject = new HashMap<>();
-        RulesConfig.rulesMapForAnySubject = new HashMap<>();
         RulesConfig.rulesMapForCustomSubject = new HashMap<>();
 
         rules.forEach(ruleDefinition -> {
@@ -115,18 +114,9 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 RulesConfig.rulesMapForMerchantSubject.put(windowSize, ruleDefinitions);
-            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.ANY)) {
-                List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForAnySubject.get(windowSize);
-                if (ruleDefinitions == null) {
-                    ruleDefinitions = new ArrayList<>();
-                }
-                if (ruleDefinition.getRuleType() == RuleDefinition.RULE_TYPE_ALERT) {
-                    ruleDefinitions.add(ruleDefinition);
-                }
-                RulesConfig.rulesMapForAnySubject.put(windowSize, ruleDefinitions);
             } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM)) {
-
-                String customSubjectKey = ruleDefinition.getCustomSubject();
+                String customSubject = ruleDefinition.getCustomSubject();
+                String customSubjectKey = customSubject;
                 HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject.get(customSubjectKey);
                 if (customWindows == null) {
                     customWindows = new HashMap<>();
