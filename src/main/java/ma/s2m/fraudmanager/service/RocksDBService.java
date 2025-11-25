@@ -26,13 +26,11 @@ public class RocksDBService {
 
     private static final Logger logger = LoggerFactory.getLogger(RocksDBService.class);
 
-    private static final int LOCK_TIMEOUT_SECONDS = 30;
-    private static final String LOCK_PREFIX = "lock:";
-
-    // on garde Jackson pour les lectures Map<Long,Measurment> (si tu veux je te fais aussi en binaire)
+    // on garde Jackson pour les lectures Map<Long,Measurment> (si tu veux je te
+    // fais aussi en binaire)
     private final ObjectMapper mapper = new ObjectMapper();
-    private static final TypeReference<Map<Long, Measurment>> MEAS_MAP_TYPE =
-            new TypeReference<Map<Long, Measurment>>() {};
+    private static final TypeReference<Map<Long, Measurment>> MEAS_MAP_TYPE = new TypeReference<Map<Long, Measurment>>() {
+    };
 
     private final RocksDB db;
     private final AsyncRocksDbWriter writer;
@@ -66,7 +64,7 @@ public class RocksDBService {
 
     /**
      * Écriture ASYNC d'une map de windows.
-     * ⚠️ ICI on ne sérialise plus -> on envoie l'objet au writer.
+     * ICI on ne sérialise plus -> on envoie l'objet au writer.
      */
     public void setMeasurments(String key, Map<Long, Measurment> measurments) {
         RetryUtil.retry(() -> {
@@ -82,7 +80,7 @@ public class RocksDBService {
 
     /**
      * Écriture ASYNC d'une seule measurment.
-     * ⚠️ plus de sérialisation ici
+     * Plus de sérialisation ici
      */
     public void setMeasurmentByKey(String key, Measurment measurment) {
         long updateStart = System.currentTimeMillis();
@@ -104,59 +102,65 @@ public class RocksDBService {
      */
     public boolean acquireLock(String lockKey, String lockValue) {
         return true;
-        /*String realKey = LOCK_PREFIX + lockKey;
-        byte[] k = toBytes(realKey);
-
-        try {
-            byte[] existing = db.get(k);
-            if (existing == null) {
-                boolean ok = writer.submitPut(k, toBytes(lockValue)); // ici put direct binaire
-                if (!ok) {
-                    logger.warn("Lock queue full, cannot acquire lock for key {}", realKey);
-                    return false;
-                }
-                logger.debug("Lock acquired for key: {}", realKey);
-                return true;
-            } else {
-                String currentVal = new String(existing, StandardCharsets.UTF_8);
-                boolean acquired = currentVal.equals(lockValue);
-                if (acquired) {
-                    logger.debug("Lock already owned for key: {}", realKey);
-                }
-                return acquired;
-            }
-        } catch (Exception e) {
-            logger.error("Error acquiring lock for key: {}", realKey, e);
-            return false;
-        }*/
+        /*
+         * String realKey = LOCK_PREFIX + lockKey;
+         * byte[] k = toBytes(realKey);
+         * 
+         * try {
+         * byte[] existing = db.get(k);
+         * if (existing == null) {
+         * boolean ok = writer.submitPut(k, toBytes(lockValue)); // ici put direct
+         * binaire
+         * if (!ok) {
+         * logger.warn("Lock queue full, cannot acquire lock for key {}", realKey);
+         * return false;
+         * }
+         * logger.debug("Lock acquired for key: {}", realKey);
+         * return true;
+         * } else {
+         * String currentVal = new String(existing, StandardCharsets.UTF_8);
+         * boolean acquired = currentVal.equals(lockValue);
+         * if (acquired) {
+         * logger.debug("Lock already owned for key: {}", realKey);
+         * }
+         * return acquired;
+         * }
+         * } catch (Exception e) {
+         * logger.error("Error acquiring lock for key: {}", realKey, e);
+         * return false;
+         * }
+         */
     }
 
     public boolean releaseLock(String lockKey, String lockValue) {
         return true;
-        /*String realKey = LOCK_PREFIX + lockKey;
-        byte[] k = toBytes(realKey);
-
-        try {
-            byte[] existing = db.get(k);
-            if (existing == null) {
-                return true;
-            }
-            String currentVal = new String(existing, StandardCharsets.UTF_8);
-            if (!currentVal.equals(lockValue)) {
-                logger.warn("Failed to release lock for key: {} (not owned by this instance)", realKey);
-                return false;
-            }
-            boolean ok = writer.submitDelete(k);
-            if (!ok) {
-                logger.warn("Lock queue full, cannot release lock {}", realKey);
-                return false;
-            }
-            logger.debug("Lock released for key: {}", realKey);
-            return true;
-        } catch (Exception e) {
-            logger.error("Error releasing lock for key: {}", realKey, e);
-            return false;
-        }*/
+        /*
+         * String realKey = LOCK_PREFIX + lockKey;
+         * byte[] k = toBytes(realKey);
+         * 
+         * try {
+         * byte[] existing = db.get(k);
+         * if (existing == null) {
+         * return true;
+         * }
+         * String currentVal = new String(existing, StandardCharsets.UTF_8);
+         * if (!currentVal.equals(lockValue)) {
+         * logger.warn("Failed to release lock for key: {} (not owned by this instance)"
+         * , realKey);
+         * return false;
+         * }
+         * boolean ok = writer.submitDelete(k);
+         * if (!ok) {
+         * logger.warn("Lock queue full, cannot release lock {}", realKey);
+         * return false;
+         * }
+         * logger.debug("Lock released for key: {}", realKey);
+         * return true;
+         * } catch (Exception e) {
+         * logger.error("Error releasing lock for key: {}", realKey, e);
+         * return false;
+         * }
+         */
     }
 
     public void deleteKey(String key) {
@@ -207,7 +211,8 @@ public class RocksDBService {
 
     /**
      * Lecture synchrone d'une seule measurment.
-     * Ici tu peux décider : lecture JSON (comme avant) ou lecture binaire via SerializationManager.
+     * Ici tu peux décider : lecture JSON (comme avant) ou lecture binaire via
+     * SerializationManager.
      * Je te laisse JSON pour compat.
      */
     public Measurment getMeasurmentByKey(String key) {
@@ -239,15 +244,17 @@ public class RocksDBService {
     }
 
     private static boolean startsWith(byte[] key, byte[] prefix) {
-        if (key.length < prefix.length) return false;
+        if (key.length < prefix.length)
+            return false;
         for (int i = 0; i < prefix.length; i++) {
-            if (key[i] != prefix[i]) return false;
+            if (key[i] != prefix[i])
+                return false;
         }
         return true;
     }
 
     // ============================================================
-    // ===============  WRITER ASYNC DÉPORTÉ ======================
+    // =============== WRITER ASYNC DÉPORTÉ ======================
     // ============================================================
 
     private static class AsyncRocksDbWriter {
@@ -300,6 +307,7 @@ public class RocksDBService {
         }
 
         // put binaire (locks, delete, etc.)
+        @SuppressWarnings("unused")
         public boolean submitPut(byte[] key, byte[] value) {
             return queue.offer(WriteRequest.putBinary(key, value));
         }
@@ -325,7 +333,8 @@ public class RocksDBService {
                         int drained = 0;
                         while (drained < 200) {
                             WriteRequest next = queue.poll();
-                            if (next == null) break;
+                            if (next == null)
+                                break;
                             apply(batch, next);
                             drained++;
                         }
@@ -345,7 +354,7 @@ public class RocksDBService {
                 case PUT_BINARY -> batch.put(req.key, req.value);
                 case PUT_OBJECT -> {
                     // sérialisation ICI, dans le thread writer
-                    byte[] serialized=null;
+                    byte[] serialized = null;
                     try {
                         serialized = SerializationManager.serialize(req.objectValue);
                     } catch (IOException e) {
@@ -364,11 +373,13 @@ public class RocksDBService {
         }
 
         private static class WriteRequest {
-            enum Type { PUT_BINARY, PUT_OBJECT, DEL }
+            enum Type {
+                PUT_BINARY, PUT_OBJECT, DEL
+            }
 
             final Type type;
             final byte[] key;
-            final byte[] value;     // pour PUT_BINARY
+            final byte[] value; // pour PUT_BINARY
             final Object objectValue; // pour PUT_OBJECT
 
             private WriteRequest(Type type, byte[] key, byte[] value, Object objectValue) {

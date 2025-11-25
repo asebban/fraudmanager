@@ -5,15 +5,12 @@ import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
 import ma.s2m.fraudmanager.service.RocksDBService;
 import io.nats.client.Connection;
-import io.nats.client.Message;
 import io.nats.client.Nats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
 import java.util.Properties;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -29,8 +26,6 @@ public class AppConfig {
     public static String redisPassword;
     public static String natsTopic;
     public static String redisDatabase;
-    public static int appQueueCapacity;
-    public static int appThreadPoolSize;
     public static int appThreadSubPoolSize;
     public static String ruleDeploymentDir;
     public static Boolean droolsDebugEnabled = false;
@@ -42,6 +37,7 @@ public class AppConfig {
     public static String rocksDBPath = "";
     public static int rocksDBQueueSize = 10_000;
     public static int appProcessorSubjectParallelismThreshold = 10;
+    public static Long waitTime = 300000L;
 
     public AppConfig() {
         props = new Properties();
@@ -80,14 +76,6 @@ public class AppConfig {
             if (System.getenv("REDIS_PASSWORD") != null) {
                 redisPassword = System.getenv("REDIS_PASSWORD");
             }
-            appQueueCapacity = Integer.parseInt(props.getProperty("app.queue.capacity", "1000"));
-            if (System.getenv("APP_QUEUE_CAPACITY") != null) {
-                appQueueCapacity = Integer.parseInt(System.getenv("APP_QUEUE_CAPACITY"));
-            }
-            appThreadPoolSize = Integer.parseInt(props.getProperty("app.thread.pool.size", "20"));
-            if (System.getenv("APP_THREAD_POOL_SIZE") != null) {
-                appThreadPoolSize = Integer.parseInt(System.getenv("APP_THREAD_POOL_SIZE"));
-            }
             appThreadSubPoolSize = Integer.parseInt(props.getProperty("app.thread.subpool.size", "16"));
             if (System.getenv("APP_THREAD_SUBPOOL_SIZE") != null) {
                 appThreadSubPoolSize = Integer.parseInt(System.getenv("APP_THREAD_SUBPOOL_SIZE"));
@@ -107,15 +95,18 @@ public class AppConfig {
             if (System.getenv("DROOLS_PROFILER_ENABLED") != null) {
                 droolsProfilerEnabled = Boolean.parseBoolean(System.getenv("DROOLS_PROFILER_ENABLED"));
             }
-            droolsRulesAgendaGroupRuleTypeEnabled = Boolean.parseBoolean(props.getProperty("drools.rules.agenda-group.ruletype.enabled", "false"));
+            droolsRulesAgendaGroupRuleTypeEnabled = Boolean
+                    .parseBoolean(props.getProperty("drools.rules.agenda-group.ruletype.enabled", "false"));
             if (System.getenv("DROOLS_RULES_AGENDA_GROUP_RULE_TYPE_ENABLED") != null) {
-                droolsRulesAgendaGroupRuleTypeEnabled = Boolean.parseBoolean(System.getenv("DROOLS_RULES_AGENDA_GROUP_RULE_TYPE_ENABLED"));
+                droolsRulesAgendaGroupRuleTypeEnabled = Boolean
+                        .parseBoolean(System.getenv("DROOLS_RULES_AGENDA_GROUP_RULE_TYPE_ENABLED"));
             }
             appProcessorMessagingProvider = props.getProperty("app.processor.messaging.provider", "NATS");
             if (System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER") != null) {
                 appProcessorMessagingProvider = System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER");
             }
-            appRocksDBCleanOnShutdown = Boolean.parseBoolean(props.getProperty("app.rocksdb.clean.on.shutdown", "true"));
+            appRocksDBCleanOnShutdown = Boolean
+                    .parseBoolean(props.getProperty("app.rocksdb.clean.on.shutdown", "true"));
             if (System.getenv("APP_ROCKSDB_CLEAN_ON_SHUTDOWN") != null) {
                 appRocksDBCleanOnShutdown = Boolean.parseBoolean(System.getenv("APP_ROCKSDB_CLEAN_ON_SHUTDOWN"));
             }
@@ -135,26 +126,32 @@ public class AppConfig {
                 rocksDBQueueSize = Integer.parseInt(System.getenv("ROCKSDB_QUEUE_SIZE"));
             }
 
-            appProcessorSubjectParallelismThreshold = Integer.parseInt(props.getProperty("app.processor.subject.parallelism.threshold", "10"));
+            appProcessorSubjectParallelismThreshold = Integer
+                    .parseInt(props.getProperty("app.processor.subject.parallelism.threshold", "10"));
             if (System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD") != null) {
-                appProcessorSubjectParallelismThreshold = Integer.parseInt(System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD"));
+                appProcessorSubjectParallelismThreshold = Integer
+                        .parseInt(System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD"));
+            }
+
+            waitTime = Long.parseLong(props.getProperty("app.wait.time", "300000"));
+            if (System.getenv("APP_WAIT_TIME") != null) {
+                waitTime = Long.parseLong(System.getenv("APP_WAIT_TIME"));
             }
 
         } catch (Exception e) {
             logger.error("Error loading properties", e);
             throw new RuntimeException(e);
         }
-        
+
     }
 
     public NatsService natsService() {
         try {
             Connection nc = Nats.connect(NATS_PROTOCOL + natsHost + ":" + natsPort);
-            BlockingQueue<Message> queue = new ArrayBlockingQueue<>(appQueueCapacity);
             ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
             RocksDBService rocksDBService = rocksDBService(rocksDBPath, rocksDBQueueSize);
             FraudProcessor processor = new FraudProcessor(rocksDBService, nc);
-            return new NatsService(nc, queue, executor, processor, rocksDBService, props);
+            return new NatsService(nc, executor, processor, rocksDBService, props);
         } catch (Exception e) {
             throw new RuntimeException("Error creating NatsService", e);
         }
@@ -166,9 +163,12 @@ public class AppConfig {
 
     private static String ruleTypeConverter(int ruleType) {
         switch (ruleType) {
-            case RuleDefinition.RULE_TYPE_ALERT : return "ALERT";
-            case RuleDefinition.RULE_TYPE_COMPUTE : return "COMPUTE";
-            default : throw new IllegalArgumentException("Unsupported rule type: " + ruleType);
+            case RuleDefinition.RULE_TYPE_ALERT:
+                return "ALERT";
+            case RuleDefinition.RULE_TYPE_COMPUTE:
+                return "COMPUTE";
+            default:
+                throw new IllegalArgumentException("Unsupported rule type: " + ruleType);
         }
     }
 

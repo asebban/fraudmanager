@@ -24,14 +24,14 @@ public class Main {
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
     private static NatsService natsService;
 
-    public static void main(String[] args) { 
+    public static void main(String[] args) {
         addShutdownHook();
 
         try {
             AppConfig config = new AppConfig();
-            init();  // Initialisation des règles avant de démarrer le service NATS
+            init(); // Initialisation des règles avant de démarrer le service NATS
             natsService = config.natsService();
-            natsService.startConsumer();  // Démarre le consumer NATS et les workers
+            natsService.startConsumer(); // Démarre le consumer NATS et les workers
             logger.info("Application started. Listening for transactions...");
             // Blocage pour garder l'app en vie en permanence
             Thread.currentThread().join();
@@ -41,18 +41,18 @@ public class Main {
     }
 
     public static void init() {
-        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(IDroolBuilderRuleProvider.PROVIDER_TYPE_DB_REDIS);
-        String deployedVersion=null;
+        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory
+                .getRuleProvider(IDroolBuilderRuleProvider.PROVIDER_TYPE_DB_REDIS);
+        String deployedVersion = null;
         Boolean deployed = false;
 
-        while(!deployed) {
+        while (!deployed) {
             try {
                 deployedVersion = ruleProvider.getCurrentlyDeployed();
                 if (deployedVersion == null) {
                     logger.error("No ruleset deployed, waiting for 5 minutes before retrying");
-                    Thread.sleep(300000);
-                }
-                else {
+                    Thread.sleep(AppConfig.waitTime);
+                } else {
                     deployed = true;
                     logger.info("Deployed ruleset version: " + deployedVersion);
                 }
@@ -64,20 +64,20 @@ public class Main {
         logger.info("Using deployed ruleset version: " + deployedVersion + " from " + AppConfig.ruleDeploymentDir);
         String deployedRuleset = deployedVersion.split(":")[0];
         String deployedVersionNumber = deployedVersion.split(":")[1];
-        String versionToDeploy = deployedRuleset + "-" + deployedVersionNumber;
+        String currentlyDeployedVersion = deployedRuleset + "-" + deployedVersionNumber;
 
         List<RuleDefinition> rules = null;
 
-        rules = ruleProvider.fetchRulesByRuleSetId(deployedRuleset, versionToDeploy);
+        rules = ruleProvider.fetchRulesByRuleSetId(deployedRuleset, currentlyDeployedVersion);
 
         if (rules == null || rules.size() == 0) {
             throw new RuntimeException("No rules found");
         }
 
         RulesConfig.allrules = rules;
-        RulesConfig.extendedVersion = versionToDeploy;
+        RulesConfig.extendedVersion = currentlyDeployedVersion;
         logger.debug("Total rules fetched: " + rules.size());
-        
+
         // Count alert rules separately before processing the lambda
         Integer alertRulesCount = 0;
         for (RuleDefinition ruleDefinition : rules) {
@@ -117,7 +117,8 @@ public class Main {
             } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM)) {
                 String customSubject = ruleDefinition.getCustomSubject();
                 String customSubjectKey = customSubject;
-                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject.get(customSubjectKey);
+                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject
+                        .get(customSubjectKey);
                 if (customWindows == null) {
                     customWindows = new HashMap<>();
                 }
@@ -131,7 +132,8 @@ public class Main {
                 customWindows.put(windowSize, ruleDefinitions);
                 RulesConfig.rulesMapForCustomSubject.put(customSubjectKey, customWindows);
             } else {
-                logger.warn("Unknown subject type: " + ruleDefinition.getSubject() + " for rule: " + ruleDefinition.getRuleTitle());
+                logger.warn("Unknown subject type: " + ruleDefinition.getSubject() + " for rule: "
+                        + ruleDefinition.getRuleTitle());
             }
 
         });
@@ -163,11 +165,8 @@ public class Main {
         });
     }
 
-    private static String cleanName(String name) {
-        return name.replaceAll("[^a-zA-Z0-9]", "_");
-    }
-
-    private static List<HashMap<Long, List<RuleDefinition>>> getRulesMapArray(HashMap<Long, List<RuleDefinition>> rulesMap) {
+    private static List<HashMap<Long, List<RuleDefinition>>> getRulesMapArray(
+            HashMap<Long, List<RuleDefinition>> rulesMap) {
         List<HashMap<Long, List<RuleDefinition>>> allMaps = new ArrayList<>();
         if (rulesMap == null || rulesMap.isEmpty()) {
             return allMaps;
@@ -192,9 +191,10 @@ public class Main {
         allMaps.add(map2);
         return allMaps;
     }
-    
+
     /**
-     * Ajoute un shutdown hook pour supprimer toutes les clés commençant par "Card:" ou "Merchant"
+     * Ajoute un shutdown hook pour supprimer toutes les clés commençant par "Card:"
+     * ou "Merchant"
      */
     private static void addShutdownHook() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -205,7 +205,8 @@ public class Main {
                 }
                 logger.info("Intercepting shutdown signal. Cleaning up RocksDB keys...");
                 AppConfig config = new AppConfig();
-                RocksDBService rocksDBService = config.rocksDBService(AppConfig.rocksDBPath, AppConfig.rocksDBQueueSize);
+                RocksDBService rocksDBService = config.rocksDBService(AppConfig.rocksDBPath,
+                        AppConfig.rocksDBQueueSize);
                 // Supprimer les clés commençant par "Card:"
                 List<String> keys = rocksDBService.getKeysByPattern("Card:*");
                 if (keys != null) {
