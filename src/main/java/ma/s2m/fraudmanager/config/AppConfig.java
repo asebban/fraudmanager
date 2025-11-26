@@ -26,7 +26,7 @@ public class AppConfig {
     public static String redisPassword;
     public static String natsTopic;
     public static String redisDatabase;
-    public static int appThreadSubPoolSize;
+    public static int appThreadSessionPoolSize;
     public static String ruleDeploymentDir;
     public static Boolean droolsDebugEnabled = false;
     public static Boolean droolsProfilerEnabled = false;
@@ -76,10 +76,12 @@ public class AppConfig {
             if (System.getenv("REDIS_PASSWORD") != null) {
                 redisPassword = System.getenv("REDIS_PASSWORD");
             }
-            appThreadSubPoolSize = Integer.parseInt(props.getProperty("app.thread.subpool.size", "16"));
-            if (System.getenv("APP_THREAD_SUBPOOL_SIZE") != null) {
-                appThreadSubPoolSize = Integer.parseInt(System.getenv("APP_THREAD_SUBPOOL_SIZE"));
+            appThreadSessionPoolSize = Integer.parseInt(props.getProperty("app.thread.session.pool.size", "16"));
+            if (System.getenv("APP_THREAD_SESSION_POOL_SIZE") != null) {
+                appThreadSessionPoolSize = Integer.parseInt(System.getenv("APP_THREAD_SESSION_POOL_SIZE"));
             }
+            System.out.println("app.thread.session.pool.size = " + appThreadSessionPoolSize);
+
             ruleDeploymentDir = props.getProperty("drools.rules.deployment.dir");
             if (System.getenv("DROOLS_RULES_DEPLOYMENT_DIR") != null) {
                 ruleDeploymentDir = System.getenv("DROOLS_RULES_DEPLOYMENT_DIR");

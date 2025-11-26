@@ -64,7 +64,7 @@ public class FraudProcessor {
                                                                                           // parallèle
     private IMessageSender messageSender;
     private DroolsSessionFactory sessionFactory;
-    private int poolSizePerSubject = AppConfig.appThreadSubPoolSize;
+    private int sessionPoolSize = AppConfig.appThreadSessionPoolSize;
     private Map<String, BlockingQueue<DroolsSession>> sessionPools = new ConcurrentHashMap<>();
 
     @SuppressWarnings("unused")
@@ -90,14 +90,14 @@ public class FraudProcessor {
     private void initializeSessionPools() {
         Set<String> subjects = Set.of(Subject.CARD, Subject.MERCHANT, Subject.CUSTOM);
         for (String subject : subjects) {
-            BlockingQueue<DroolsSession> queue = new ArrayBlockingQueue<>(poolSizePerSubject);
-            for (int i = 0; i < poolSizePerSubject; i++) {
+            BlockingQueue<DroolsSession> queue = new ArrayBlockingQueue<>(sessionPoolSize);
+            for (int i = 0; i < sessionPoolSize; i++) {
                 DroolsSession session = createSessionForSubject(subject);
                 queue.offer(session);
             }
             sessionPools.put(subject, queue);
             logger.info("Initialized Drools session pool for subject '{}' with {} sessions", subject,
-                    poolSizePerSubject);
+                    sessionPoolSize);
         }
     }
 
@@ -140,7 +140,8 @@ public class FraudProcessor {
         if (pool == null) {
             throw new IllegalArgumentException("No session pool for subject: " + subject);
         }
-        return pool.take(); // Bloque si vide
+        DroolsSession session = pool.take(); // Bloque si vide
+        return session;
     }
 
     private void releaseSession(String subject, DroolsSession session) {
@@ -166,8 +167,15 @@ public class FraudProcessor {
         }
         DroolsSession session = null;
         try {
+            Long beginAcquireSession = System.currentTimeMillis();
             session = acquireSession(subject);
+            Long endAcquireSession = System.currentTimeMillis();
+            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration",
+                    (endAcquireSession - beginAcquireSession), correlationId, subject,
+                    TimeConversion.toHumanReadableDuration(windowSize), measurment.getKey());
             session.execute(measurment, windowSize, subject, correlationId);
+        } catch (Exception e) {
+            logger.error("Error executing session for subject: {}", subject, e);
         } finally {
             releaseSession(subject, session);
         }
@@ -208,8 +216,7 @@ public class FraudProcessor {
                 alertSet.setKey(event.getAlertSet().getKey());
                 break;
             default:
-                logger.warn("### [{}] ProcessFunction Unknown subject type: {} for transaction: {}",
-                        event.getCorrelationId(), subject, event.getTransaction().getTransactionNo());
+                break;
         }
         alertSet.setTopic(event.getTransaction().getTopic());
         alertSet.setAlertStatus(AlertSet.NO_ALERT);
@@ -517,7 +524,7 @@ public class FraudProcessor {
      * @return The updated measurement.
      */
     private Measurment processWindowSize(String key, Measurment measurment, Long windowSize, TrxOrAlertEvent event,
-            Long arrivalTime, String correlationId, String subject) {
+            Long arrivalTime, String correlationId, String subject, String customSubject) {
 
         VRTransactionSummary transaction = event.getTransaction();
         transaction.setTimestamp(arrivalTime);
@@ -562,7 +569,8 @@ public class FraudProcessor {
         try {
             // update the indicators in the measurment (with drools)
             Long beginExecute = System.currentTimeMillis();
-            executeSession(windowSize, measurment, subject, correlationId);
+            executeSession(windowSize, measurment, subject + customSubject != null ? ":" + customSubject : "",
+                    correlationId);
             Long endExecute = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration",
                     (endExecute - beginExecute), correlationId, subject,
@@ -901,7 +909,7 @@ public class FraudProcessor {
 
             Long beforeProcessWindowSize = System.currentTimeMillis();
             measurment = processWindowSize(key, measurment, ruleWindowSize, cardEvent, arrivalTime, correlationId,
-                    Subject.CARD);
+                    Subject.CARD, null);
             Long afterProcessWindowSize = System.currentTimeMillis();
             logger.debug(
                     "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCardEvent(): Duration of processing the window",
@@ -960,7 +968,7 @@ public class FraudProcessor {
 
             Long beforeProcessWindowSize = System.currentTimeMillis();
             measurment = processWindowSize(key, measurment, ruleWindowSize, merchantEvent, arrivalTime, correlationId,
-                    Subject.MERCHANT);
+                    Subject.MERCHANT, null);
             Long afterProcessWindowSize = System.currentTimeMillis();
             logger.debug(
                     "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processMerchantEvent: Duration of processWindowSize",
@@ -1011,7 +1019,8 @@ public class FraudProcessor {
             Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + KEY_SEPARATOR + ruleWindowSize);
             Long stateGetEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCustomEvent: State get time",
-                    (stateGetEnd - stateGetStart), correlationId, Subject.CUSTOM, Thread.currentThread().getName(),
+                    (stateGetEnd - stateGetStart), correlationId, Subject.CUSTOM + ":" + customSubject,
+                    Thread.currentThread().getName(),
                     TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
                     customEvent.getTransaction().getTransactionNo());
 
@@ -1021,11 +1030,12 @@ public class FraudProcessor {
 
             Long beforeProcessWindowSize = System.currentTimeMillis();
             measurment = processWindowSize(key, measurment, ruleWindowSize, customEvent, arrivalTime, correlationId,
-                    Subject.CUSTOM);
+                    Subject.CUSTOM, customSubject);
             Long afterProcessWindowSize = System.currentTimeMillis();
             logger.debug(
                     "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCustomEvent: Duration of processWindowSize",
-                    (afterProcessWindowSize - beforeProcessWindowSize), correlationId, Subject.CUSTOM,
+                    (afterProcessWindowSize - beforeProcessWindowSize), correlationId,
+                    Subject.CUSTOM + ":" + customSubject,
                     Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
                     customEvent.getTransaction().getTransactionNo());
 

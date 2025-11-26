@@ -41,6 +41,7 @@ public class NatsService {
             executor.submit(() -> {
                 try {
                     long startTime = System.currentTimeMillis();
+                    msg.getHeaders().put("x-recv-ts-ms", String.valueOf(startTime));
                     processor.process(msg);
                     long endTime = System.currentTimeMillis();
                     String correlationId = msg.getHeaders() == null ? null

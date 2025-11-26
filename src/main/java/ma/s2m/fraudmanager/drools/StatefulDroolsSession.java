@@ -32,7 +32,7 @@ final class StatefulDroolsSession implements DroolsSession {
     private RuleProfiler ruleProfiler = new RuleProfiler();
     private String correlationId = "";
 
-    public StatefulDroolsSession(KieSession ks) { 
+    public StatefulDroolsSession(KieSession ks) {
         this.ks = ks;
         for (String groupName : RulesConfig.ruleGroupSet) {
             EntryPoint entryPoint = ks.getEntryPoint(groupName);
@@ -46,33 +46,38 @@ final class StatefulDroolsSession implements DroolsSession {
 
     }
 
-    @Override public void setGlobal(String name, Object value) { ks.setGlobal(name, value); }
+    @Override
+    public void setGlobal(String name, Object value) {
+        ks.setGlobal(name, value);
+    }
 
-    @Override public void execute(Object... facts) {
-        
+    @Override
+    public void execute(Object... facts) {
+
         if (noRules) {
             logger.debug("###### No rules executed, skipping processing");
             return;
         }
 
-        Measurment m=null;
-        if (facts != null) for (Object f : facts) {
-            if (f instanceof Measurment) {
-                m = (Measurment) f;
-            }
-            if (f instanceof Long) {
-                windowSize = (Long) f;
-            }
-            if (f instanceof String) {
-                String s = (String) f;
-                if (s != null && s != "" && s != Subject.CARD && s != Subject.MERCHANT && !s.startsWith(Subject.CUSTOM) && s != Subject.ANY) {
-                    this.correlationId = s;
+        Measurment m = null;
+        if (facts != null)
+            for (Object f : facts) {
+                if (f instanceof Measurment) {
+                    m = (Measurment) f;
                 }
-                else {
-                    this.subject = (String) f;
+                if (f instanceof Long) {
+                    windowSize = (Long) f;
+                }
+                if (f instanceof String) {
+                    String s = (String) f;
+                    if (s != null && s != "" && s != Subject.CARD && s != Subject.MERCHANT
+                            && !s.startsWith(Subject.CUSTOM) && s != Subject.ANY) {
+                        this.correlationId = s;
+                    } else {
+                        this.subject = (String) f;
+                    }
                 }
             }
-        }
 
         Duration duration = Duration.ofMillis(windowSize);
         String formattedDuration = DurationFormatter.formatDuration(duration);
@@ -98,21 +103,29 @@ final class StatefulDroolsSession implements DroolsSession {
             Long t0 = System.currentTimeMillis();
             ks.fireAllRules();
             Long t1 = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] trx={} ms of execution of fireAllRules for window {}", (t1 - t0), this.correlationId, this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A", formattedDuration);
+            logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}", (t1 - t0),
+                    this.correlationId, this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
+                    m != null ? m.getKey() : "N/A", formattedDuration);
             if (droolsProfilerEnabled) {
                 final Measurment finalM = m;
                 final String cId = this.correlationId;
                 this.ruleProfiler.reportTop(10).forEach(s -> {
-                    logger.debug("[{}] trx {} - win {} : {} : {}", cId, finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration, this.subject, s);
+                    logger.debug("[{}] trx {} - win {} : {} : {}", cId,
+                            finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration,
+                            this.subject, s);
                 });
             }
-            
-       } else {
-            //ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_ALERT + ":" + this.subject + "->" + formattedDuration).setFocus();
-            //ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_COMPUTE + ":" + this.subject + "->" + formattedDuration).setFocus();
+
+        } else {
+            // ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_ALERT + ":" +
+            // this.subject + "->" + formattedDuration).setFocus();
+            // ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_COMPUTE + ":" +
+            // this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.nanoTime();
             ks.fireAllRules();
-            logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}", (System.nanoTime() - t0)/1_000_000, formattedDuration, m != null ? m.getTransaction().getTransactionNo() : "N/A", this.subject);
+            logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}",
+                    (System.nanoTime() - t0) / 1_000_000, formattedDuration,
+                    m != null ? m.getTransaction().getTransactionNo() : "N/A", this.subject);
 
             if (droolsProfilerEnabled) {
                 this.ruleProfiler.reportTop(10).forEach(logger::debug);
@@ -129,20 +142,26 @@ final class StatefulDroolsSession implements DroolsSession {
                 ep.delete(handle);
             }
         }
-        insertedHandles.clear();    
+        insertedHandles.clear();
     }
 
-    @Override public void close() { ks.dispose(); }
+    @Override
+    public void close() {
+        ks.dispose();
+    }
 
-    @Override public void clean() { 
-        for (Iterator<FactHandle> iterator = ks.getFactHandles().iterator(); iterator.hasNext(); ) {
+    @Override
+    public void clean() {
+        for (Iterator<FactHandle> iterator = ks.getFactHandles().iterator(); iterator.hasNext();) {
             FactHandle factHandle = iterator.next();
             ks.delete(factHandle);
         }
     }
 
     // Optionnel : exposer KieSession pour ajouter listeners, channels…
-    public KieSession unwrap() { return ks; }
+    public KieSession unwrap() {
+        return ks;
+    }
 
     @Override
     public void addEventListener(AgendaEventListener eventListener) {
