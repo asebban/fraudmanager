@@ -88,7 +88,7 @@ public class NatsService {
                 }
             });
         });
-        queryDispatcher.subscribe(AppConfig.fraudQueryTopic, "fraudmanager-query-group");
+        queryDispatcher.subscribe(queryTopic, "fraudmanager-query-group");
 
         logger.info("Started virtual‑thread executor for processing NATS messages and query dispatcher");
 
