@@ -3,7 +3,6 @@ package ma.s2m.fraudmanager.service;
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
 import ma.s2m.auth.query.FraudQueryResponse;
-import ma.s2m.auth.query.Indicator;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.serializer.SerializationManager;
 
