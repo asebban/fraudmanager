@@ -51,10 +51,12 @@ import org.slf4j.LoggerFactory;
 
 public class FraudProcessor {
 
-    private static final String KEY_SEPARATOR = "/";
-    private static final String CARD_KEY_PREFIX = Subject.CARD + ":";
-    private static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + ":";
-    private static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + ":";
+    public static final String WINDOW_SEPARATOR = "/";
+    public static final String KEY_SEPARATOR = ":";
+    public static final String CARD_KEY_PREFIX = Subject.CARD + KEY_SEPARATOR;
+    public static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + KEY_SEPARATOR;
+    public static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + KEY_SEPARATOR;
+    public static final String NO_ERROR_MESSAGE = "";
 
     private static final Logger logger = LoggerFactory.getLogger(FraudProcessor.class);
     private final RocksDBService rocksDBService;
@@ -135,30 +137,48 @@ public class FraudProcessor {
         this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
     }
 
-    private DroolsSession acquireSession(String subject) throws InterruptedException {
-        BlockingQueue<DroolsSession> pool = sessionPools.get(subject);
+    private DroolsSession acquireSession(String subject, String correlationId, Long windowSize, String key) throws InterruptedException {
+
+        String subjectKey = subject;
+        if (subject.contains(KEY_SEPARATOR)) {
+            subjectKey = subject.substring(0, subject.indexOf(KEY_SEPARATOR));
+        }
+
+        Long beginAcquireSession = System.currentTimeMillis();
+        BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
         if (pool == null) {
             throw new IllegalArgumentException("No session pool for subject: " + subject);
         }
         DroolsSession session = pool.take(); // Bloque si vide
+        Long endAcquireSession = System.currentTimeMillis();
+        logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}",
+                (endAcquireSession - beginAcquireSession), correlationId, subject,
+                TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
         return session;
     }
 
     private void releaseSession(String subject, DroolsSession session) {
+
+        String subjectKey = subject;
+        if (subject.contains(KEY_SEPARATOR)) {
+            subjectKey = subject.substring(0, subject.indexOf(KEY_SEPARATOR));
+        }
+
         if (session != null) {
             try {
                 session.clean(); // Nettoie les faits
-                sessionPools.get(subject).offer(session);
+                sessionPools.get(subjectKey).offer(session);
             } catch (Exception e) {
                 logger.error("Error returning session to pool for subject: {}", subject, e);
                 // Recrée une session en cas d'erreur
-                sessionPools.get(subject).offer(createSessionForSubject(subject));
+                sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
             }
         }
     }
 
     private void executeSession(Long windowSize, Measurment measurment, String subject, String correlationId)
             throws Exception {
+
         if (measurment == null) {
             throw new IllegalArgumentException("executeSession: Measurment cannot be null");
         }
@@ -168,7 +188,7 @@ public class FraudProcessor {
         DroolsSession session = null;
         try {
             Long beginAcquireSession = System.currentTimeMillis();
-            session = acquireSession(subject);
+            session = acquireSession(subject, correlationId, windowSize, measurment.getKey());
             Long endAcquireSession = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration",
                     (endAcquireSession - beginAcquireSession), correlationId, subject,
@@ -569,8 +589,13 @@ public class FraudProcessor {
         try {
             // update the indicators in the measurment (with drools)
             Long beginExecute = System.currentTimeMillis();
-            executeSession(windowSize, measurment, subject + customSubject != null ? ":" + customSubject : "",
-                    correlationId);
+
+            String subjectKey = subject;
+            if (subjectKey.equalsIgnoreCase(Subject.CUSTOM)) {
+                subjectKey = subject + KEY_SEPARATOR + customSubject;
+            }
+
+            executeSession(windowSize, measurment, subjectKey, correlationId);
             Long endExecute = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration",
                     (endExecute - beginExecute), correlationId, subject,
@@ -649,13 +674,13 @@ public class FraudProcessor {
      * @return The merged alert set.
      */
     private AlertSet mergeAlertSets(AlertSet originalAlertSet, AlertSet newAlertSet) {
-        if (originalAlertSet == null) {
+        if (originalAlertSet == null || originalAlertSet.getAlerts() == null || originalAlertSet.getAlerts().isEmpty()) {
             if (newAlertSet != null) {
                 newAlertSet.calculateScore(RulesConfig.alertRulesCount);
             }
             return newAlertSet;
         }
-        if (newAlertSet == null) {
+        if (newAlertSet == null || newAlertSet.getAlerts() == null || newAlertSet.getAlerts().isEmpty()) {
             if (originalAlertSet != null) {
                 originalAlertSet.calculateScore(RulesConfig.alertRulesCount);
             }
@@ -697,10 +722,10 @@ public class FraudProcessor {
     public void process(Message msg) {
         String topic = msg.getReplyTo();
         long arrivalTime = System.currentTimeMillis();
+        String correlationId = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-correlation-id");
+
         try {
             // Désérialiser
-            String correlationId = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-correlation-id");
-
             long beforeDeserialize = System.currentTimeMillis();
             @SuppressWarnings("unchecked")
             FraudCheckRequest<ITransaction> request = (FraudCheckRequest<ITransaction>) SerializationManager
@@ -747,7 +772,7 @@ public class FraudProcessor {
                         try {
                             return keyProcessor.executeWithLock(cardKey, (key) -> {
                                 TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId,
-                                        Subject.CARD, null, ruleMapForCard);
+                                        Subject.CARD, null, ruleMapForCard, false);
                                 return cardEvent;
                             });
                         } catch (Exception e) {
@@ -766,7 +791,7 @@ public class FraudProcessor {
                         try {
                             return keyProcessor.executeWithLock(merchantKey, (key) -> {
                                 TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId,
-                                        Subject.MERCHANT, null, ruleMapForMerchant);
+                                        Subject.MERCHANT, null, ruleMapForMerchant, false);
                                 return merchantEvent;
                             });
                         } catch (Exception e) {
@@ -789,8 +814,7 @@ public class FraudProcessor {
                         try {
                             return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
                                 TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId,
-                                        Subject.CUSTOM, customSubject,
-                                        RulesConfig.rulesMapForCustomSubject.get(customSubject));
+                                        Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
                                 return customEvent;
                             });
                         } catch (Exception e) {
@@ -828,7 +852,7 @@ public class FraudProcessor {
                 for (CompletableFuture<TrxOrAlertEvent> cp : cardProcessingFutures) {
                     TrxOrAlertEvent cardEvent = cp != null ? cp.get() : null;
                     if (cardEvent != null) {
-                        combinedAlertSet = cardEvent.getAlertSet();
+                        combinedAlertSet = mergeAlertSets(combinedAlertSet, cardEvent.getAlertSet());
                     }
                 }
 
@@ -864,6 +888,8 @@ public class FraudProcessor {
             response.setAlertSet(combinedAlertSet);
             response.setCorrelationId(correlationId);
             response.setTimestamp(System.currentTimeMillis());
+            response.setError(false);
+            response.setErrorMessage(NO_ERROR_MESSAGE);
 
             // Sérialiser et publier réponse
             Long beforeSerialize = System.currentTimeMillis();
@@ -874,8 +900,8 @@ public class FraudProcessor {
                     tx.getTransactionNo());
             natsConnection.publish(topic, responseBytes);
         } catch (Exception e) {
+            e.printStackTrace();
             logger.error("Error processing transaction", e);
-            // Ajoutez logic de retry ou dead-letter queue
         }
     }
 
@@ -899,7 +925,7 @@ public class FraudProcessor {
         for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
             Long ruleWindowSize = (Long) entry.getKey();
             Long stateGetStart = System.currentTimeMillis();
-            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + KEY_SEPARATOR + ruleWindowSize);
+            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
             Long stateGetEnd = System.currentTimeMillis();
             logger.debug(
                     "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCardEvent(): State retrieval time",
@@ -922,7 +948,7 @@ public class FraudProcessor {
             measurment.setTransaction(null); // clear transaction to avoid serialization issues
 
             Long stateSetStart = System.currentTimeMillis();
-            rocksDBService.setMeasurmentByKey(eventKey + KEY_SEPARATOR + ruleWindowSize, measurment);
+            rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize, measurment);
             Long stateSetEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCardEvent(): State set time",
                     (stateSetEnd - stateSetStart), correlationId, Subject.CARD, Thread.currentThread().getName(),
@@ -954,7 +980,7 @@ public class FraudProcessor {
             Long ruleWindowSize = (Long) entry.getKey();
 
             Long stateGetStart = System.currentTimeMillis();
-            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + KEY_SEPARATOR + ruleWindowSize);
+            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
             Long stateGetEnd = System.currentTimeMillis();
             logger.debug(
                     "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processMerchantEvent(): State retrieval time",
@@ -981,7 +1007,7 @@ public class FraudProcessor {
             measurment.setTransaction(null); // clear transaction to avoid serialization issues
 
             Long stateSetStart = System.currentTimeMillis();
-            rocksDBService.setMeasurmentByKey(eventKey + KEY_SEPARATOR + ruleWindowSize, measurment);
+            rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize, measurment);
             Long stateSetEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processMerchantEvent: State set time",
                     (stateSetEnd - stateSetStart), correlationId, Subject.MERCHANT, Thread.currentThread().getName(),
@@ -1016,7 +1042,7 @@ public class FraudProcessor {
             Long ruleWindowSize = (Long) entry.getKey();
 
             Long stateGetStart = System.currentTimeMillis();
-            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + KEY_SEPARATOR + ruleWindowSize);
+            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
             Long stateGetEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCustomEvent: State get time",
                     (stateGetEnd - stateGetStart), correlationId, Subject.CUSTOM + ":" + customSubject,
@@ -1042,7 +1068,7 @@ public class FraudProcessor {
             alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
             measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
             measurment.setTransaction(null); // clear transaction to avoid serialization issues
-            rocksDBService.setMeasurmentByKey(eventKey + KEY_SEPARATOR + measurment.getWindowSize(), measurment);
+            rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + measurment.getWindowSize(), measurment);
         }
 
         customEvent.setAlertSet(alertSet);
@@ -1060,7 +1086,7 @@ public class FraudProcessor {
      * @return The processed event.
      */
     private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId,
-            String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap) {
+            String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow) {
         switch (subject) {
             case Subject.CARD:
                 return processCardEvent(event, key, arrivalTime, correlationId, ruleMap);

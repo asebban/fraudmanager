@@ -5,10 +5,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import org.drools.base.factmodel.traits.Traitable;
 import org.kie.api.definition.type.PropertyReactive;
-
 
 import ma.s2m.auth.impl.VRTransactionSummary;
 import ma.s2m.auth.AlertSet;
@@ -18,23 +18,30 @@ import ma.s2m.auth.AlertSet;
 public class Measurment implements Cloneable, Serializable {
 
 	private static final long serialVersionUID = 1L;
-	
+
 	private Long window;
 	private Long windowSize;
 	private VRTransactionSummary transaction;
-	private String subject;	//The subject is the entity that is being tracked (Card, Merchant, ...)
-	private List<TrxEntry> trxEntries = new ArrayList<>(); // This list records all the transactions that have been processed in this measurment.
+	private String subject; // The subject is the entity that is being tracked (Card, Merchant, ...)
+	private List<TrxEntry> trxEntries = new ArrayList<>(); // This list records all the transactions that have been
+															// processed in this measurment.
 
 	private boolean applyAlerts = true;
 	private String key;
 
-	private RecordHashMap records = new RecordHashMap(); // This list records all the rule data for the current transaction.
-	private HashMap<String, Object> lasts = new HashMap<>(); // This hashmap records the last value of attributes for the concerned subject (Country, merchant, ...).
-	private HashMap<String, Integer> lastsCount = new HashMap<>(); // This hashmap records the count of occurrences of the same attributes
+	private RecordHashMap records = new RecordHashMap(); // This list records all the rule data for the current
+															// key.
+	private RecordHashMap globalRecords = new RecordHashMap(); // This list records all the rule global data for the
+																// current key.
+	private HashMap<String, Object> lasts = new HashMap<>(); // This hashmap records the last value of attributes for
+																// the concerned subject (Country, merchant, ...).
+	private HashMap<String, Integer> lastsCount = new HashMap<>(); // This hashmap records the count of occurrences of
+																	// the same attributes
 
 	private AlertSet alertSet = new AlertSet();
 
-	private Boolean dirty = false; // This is used to indicate if the measurment has been modified since the last time it was processed.
+	private Boolean dirty = false; // This is used to indicate if the measurment has been modified since the last
+									// time it was processed.
 
 	public Measurment() {
 	}
@@ -91,7 +98,7 @@ public class Measurment implements Cloneable, Serializable {
 		this.lasts = clonedLasts;
 
 		clone.setLastsCount(new HashMap<>(this.lastsCount));
-		
+
 		clone.setAlertSet(this.alertSet);
 		clone.setDirty(this.dirty);
 		return clone;
@@ -126,7 +133,7 @@ public class Measurment implements Cloneable, Serializable {
 			}
 			this.getRecords().put(key, recordFromMe);
 		}
-	
+
 		return this;
 	}
 
@@ -141,6 +148,7 @@ public class Measurment implements Cloneable, Serializable {
 	public Long getWindow() {
 		return window;
 	}
+
 	public void setWindow(Long window) {
 		this.window = window;
 	}
@@ -217,5 +225,47 @@ public class Measurment implements Cloneable, Serializable {
 				+ ", lasts=" + lasts + ", alerts=" + alertSet + "]";
 	}
 
-}
+	public Double sumTrx(Predicate<VRTransactionSummary> filter) {
+		if (trxEntries == null || trxEntries.isEmpty()) {
+			return 0.0;
+		}
 
+		return trxEntries.stream()
+				.filter(trxEntry -> trxEntry.getTx() != null && filter.test(trxEntry.getTx()))
+				.map(trxEntry -> trxEntry.getTx().getAmount())
+				.filter(amount -> amount != null)
+				.reduce(0.0, Double::sum);
+	}
+
+	public Long countTrx(Predicate<VRTransactionSummary> filter) {
+		if (trxEntries == null || trxEntries.isEmpty()) {
+			return 0L;
+		}
+
+		return trxEntries.stream()
+				.filter(trxEntry -> trxEntry.getTx() != null && filter.test(trxEntry.getTx()))
+				.count();
+	}
+
+	public Boolean removeTrx(Predicate<VRTransactionSummary> filter) {
+		if (trxEntries == null) {
+			return false;
+		}
+
+		if (trxEntries.isEmpty()) {
+			return true;
+		}
+
+		trxEntries.removeIf(trxEntry -> trxEntry.getTx() != null && filter.test(trxEntry.getTx()));
+		return true;
+	}
+
+	public RecordHashMap getGlobalRecords() {
+		return globalRecords;
+	}
+
+	public void setGlobalRecords(RecordHashMap globalRecords) {
+		this.globalRecords = globalRecords;
+	}
+
+}

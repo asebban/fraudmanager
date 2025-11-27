@@ -209,6 +209,30 @@ public class RocksDBService {
         });
     }
 
+    public List<String> getKeysStartingWith(String prefix) {
+        return RetryUtil.retry(() -> {
+            try {
+                byte[] prefixBytes = toBytes(prefix);
+                List<String> keys = new ArrayList<>();
+
+                try (RocksIterator it = db.newIterator()) {
+                    for (it.seek(prefixBytes); it.isValid(); it.next()) {
+                        byte[] key = it.key();
+                        if (!startsWith(key, prefixBytes)) {
+                            break;
+                        }
+                        keys.add(fromBytes(key));
+                    }
+                }
+                logger.debug("Found {} keys starting with: {}", keys.size(), prefix);
+                return keys;
+            } catch (Exception e) {
+                logger.error("Error getting keys starting with: {}", prefix, e);
+                return new ArrayList<>();
+            }
+        });
+    }
+
     /**
      * Lecture synchrone d'une seule measurment.
      * Ici tu peux décider : lecture JSON (comme avant) ou lecture binaire via

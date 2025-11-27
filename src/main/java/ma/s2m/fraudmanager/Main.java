@@ -96,7 +96,7 @@ public class Main {
         rules.forEach(ruleDefinition -> {
             Long windowSize = ruleDefinition.getTimeFrame() * ruleDefinition.getTimeframeUnit();
 
-            if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CARD)) {
+            if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CARD) && !ruleDefinition.getFixedWindow()) {
                 List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForCardSubject.get(windowSize);
                 if (ruleDefinitions == null) {
                     ruleDefinitions = new ArrayList<>();
@@ -105,7 +105,8 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 RulesConfig.rulesMapForCardSubject.put(windowSize, ruleDefinitions);
-            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.MERCHANT)) {
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.MERCHANT)
+                    && !ruleDefinition.getFixedWindow()) {
                 List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForMerchantSubject.get(windowSize);
                 if (ruleDefinitions == null) {
                     ruleDefinitions = new ArrayList<>();
@@ -114,7 +115,7 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 RulesConfig.rulesMapForMerchantSubject.put(windowSize, ruleDefinitions);
-            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM)) {
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM) && !ruleDefinition.getFixedWindow()) {
                 String customSubject = ruleDefinition.getCustomSubject();
                 String customSubjectKey = customSubject;
                 HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject
@@ -131,6 +132,41 @@ public class Main {
                 }
                 customWindows.put(windowSize, ruleDefinitions);
                 RulesConfig.rulesMapForCustomSubject.put(customSubjectKey, customWindows);
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM) && ruleDefinition.getFixedWindow()) {
+                String customSubject = ruleDefinition.getCustomSubject();
+                String customSubjectKey = customSubject;
+                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubjectFixedWindow
+                        .get(customSubjectKey);
+                if (customWindows == null) {
+                    customWindows = new HashMap<>();
+                }
+                List<RuleDefinition> ruleDefinitions = customWindows.get(windowSize);
+                if (ruleDefinitions == null) {
+                    ruleDefinitions = new ArrayList<>();
+                }
+                if (ruleDefinition.getRuleType() == RuleDefinition.RULE_TYPE_ALERT) {
+                    ruleDefinitions.add(ruleDefinition);
+                }
+                customWindows.put(windowSize, ruleDefinitions);
+                RulesConfig.rulesMapForCustomSubjectFixedWindow.put(customSubjectKey, customWindows);
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CARD) && ruleDefinition.getFixedWindow()) {
+                List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForCardSubjectFixedWindow.get(windowSize);
+                if (ruleDefinitions == null) {
+                    ruleDefinitions = new ArrayList<>();
+                }
+                if (ruleDefinition.getRuleType() == RuleDefinition.RULE_TYPE_ALERT) {
+                    ruleDefinitions.add(ruleDefinition);
+                }
+                RulesConfig.rulesMapForCardSubjectFixedWindow.put(windowSize, ruleDefinitions);               
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.MERCHANT) && ruleDefinition.getFixedWindow()) {
+                List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForMerchantSubjectFixedWindow.get(windowSize);
+                if (ruleDefinitions == null) {
+                    ruleDefinitions = new ArrayList<>();
+                }
+                if (ruleDefinition.getRuleType() == RuleDefinition.RULE_TYPE_ALERT) {
+                    ruleDefinitions.add(ruleDefinition);
+                }
+                RulesConfig.rulesMapForMerchantSubjectFixedWindow.put(windowSize, ruleDefinitions);
             } else {
                 logger.warn("Unknown subject type: " + ruleDefinition.getSubject() + " for rule: "
                         + ruleDefinition.getRuleTitle());
@@ -139,18 +175,18 @@ public class Main {
         });
 
         RulesConfig.cardSubjectPresent = !RulesConfig.rulesMapForCardSubject.isEmpty();
+        RulesConfig.cardSubjectFixedWindowPresent = !RulesConfig.rulesMapForCardSubjectFixedWindow.isEmpty();
         RulesConfig.merchantSubjectPresent = !RulesConfig.rulesMapForMerchantSubject.isEmpty();
-        RulesConfig.anySubjectPresent = !RulesConfig.rulesMapForAnySubject.isEmpty();
+        RulesConfig.merchantSubjectFixedWindowPresent = !RulesConfig.rulesMapForMerchantSubjectFixedWindow.isEmpty();
         RulesConfig.customSubjectPresent = !RulesConfig.rulesMapForCustomSubject.isEmpty();
+        RulesConfig.customSubjectFixedWindowPresent = !RulesConfig.rulesMapForCustomSubjectFixedWindow.isEmpty();
 
         RulesConfig.cardSubjectSize = RulesConfig.rulesMapForCardSubject.size();
         RulesConfig.merchantSubjectSize = RulesConfig.rulesMapForMerchantSubject.size();
-        RulesConfig.anySubjectSize = RulesConfig.rulesMapForAnySubject.size();
         RulesConfig.customSubjectSize = RulesConfig.rulesMapForCustomSubject.size();
 
         RulesConfig.rulesMapArrayForCardSubject = getRulesMapArray(RulesConfig.rulesMapForCardSubject);
         RulesConfig.rulesMapArrayForMerchantSubject = getRulesMapArray(RulesConfig.rulesMapForMerchantSubject);
-        RulesConfig.rulesMapArrayForAnySubject = getRulesMapArray(RulesConfig.rulesMapForAnySubject);
 
         rules.forEach(rule -> {
             String cleanedGroupName = Utils.cleanGroupName(rule.getGroup());

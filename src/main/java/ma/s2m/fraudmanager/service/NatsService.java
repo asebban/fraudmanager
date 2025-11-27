@@ -2,11 +2,15 @@ package ma.s2m.fraudmanager.service;
 
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
+import ma.s2m.auth.query.FraudQueryResponse;
+import ma.s2m.auth.query.Indicator;
 import ma.s2m.fraudmanager.config.AppConfig;
+import ma.s2m.serializer.SerializationManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 
@@ -14,21 +18,27 @@ public class NatsService {
     private static final Logger logger = LoggerFactory.getLogger(NatsService.class);
     private final Connection nc;
     private final ExecutorService executor;
-    private final FraudProcessor processor;
+    private final FraudProcessor fraudProcessor;
+    private final QueryProcessor queryProcessor;
     @SuppressWarnings("unused")
     private final RocksDBService rocksDBService;
     private final String topic;
+    private final String queryTopic;
 
     // garder une référence pour pouvoir se désabonner/stopper
     private Dispatcher dispatcher;
+    private Dispatcher queryDispatcher;
 
     public NatsService(Connection nc, ExecutorService executor,
-            FraudProcessor processor, RocksDBService rocksDBService, Properties props) {
+            FraudProcessor fraudProcessor, QueryProcessor queryProcessor, RocksDBService rocksDBService,
+            Properties props) {
         this.nc = nc;
         this.executor = executor;
-        this.processor = processor;
+        this.fraudProcessor = fraudProcessor;
+        this.queryProcessor = queryProcessor;
         this.rocksDBService = rocksDBService;
         this.topic = AppConfig.natsTopic;
+        this.queryTopic = AppConfig.fraudQueryTopic;
     }
 
     /**
@@ -37,12 +47,13 @@ public class NatsService {
      * directly, eliminating the intermediate queue and worker‑loop indirection.
      */
     public void startConsumer() {
+        // Dispatcher for main fraud processing
         this.dispatcher = nc.createDispatcher(msg -> {
             executor.submit(() -> {
                 try {
                     long startTime = System.currentTimeMillis();
                     msg.getHeaders().put("x-recv-ts-ms", String.valueOf(startTime));
-                    processor.process(msg);
+                    fraudProcessor.process(msg);
                     long endTime = System.currentTimeMillis();
                     String correlationId = msg.getHeaders() == null ? null
                             : msg.getHeaders().getFirst("x-correlation-id");
@@ -55,28 +66,58 @@ public class NatsService {
             });
         });
         dispatcher.subscribe(topic, "fraudmanager-group");
-        logger.info("Started virtual‑thread executor for processing NATS messages");
+
+        // Dispatcher for fraud query topic – starts a placeholder thread on message
+        // arrival
+        this.queryDispatcher = nc.createDispatcher(msg -> {
+            executor.submit(() -> {
+                try {
+                    queryProcessor.process(msg);
+                } catch (Exception e) {
+                    logger.error("Worker error while processing message", e);
+                    FraudQueryResponse response = new FraudQueryResponse();
+                    response.setError(true);
+                    response.setErrorMessage(e.getMessage());
+                    try {
+                        byte[] data = SerializationManager.serialize(response);
+                        nc.publish(msg.getSubject(), data);
+                    } catch (IOException e1) {
+                        logger.error("Error while serializing / publishing message to Nats", e1);
+                        e1.printStackTrace();
+                    }
+                }
+            });
+        });
+        queryDispatcher.subscribe(AppConfig.fraudQueryTopic, "fraudmanager-query-group");
+
+        logger.info("Started virtual‑thread executor for processing NATS messages and query dispatcher");
+
     }
 
-    // arrêt propre à appeler lors du shutdown de l’appli
+    /**
+     * Stops the NATS service, unsubscribes from topics and releases resources.
+     */
     public void stop() {
         try {
             if (dispatcher != null) {
                 dispatcher.unsubscribe(topic);
                 dispatcher = null;
             }
+            if (queryDispatcher != null) {
+                queryDispatcher.unsubscribe(AppConfig.fraudQueryTopic);
+                queryDispatcher = null;
+            }
         } catch (Exception e) {
             logger.warn("Error while unsubscribing dispatcher", e);
         }
 
-        // interrompre les workers
-        executor.shutdownNow(); // provoque InterruptedException
+        // Release processor resources
+        fraudProcessor.shutdown();
 
-        // libérer les ressources du processor (sessions Drools, pool interne, etc.)
-        processor.shutdown();
+        // Stop the executor
+        executor.shutdownNow();
 
         try {
-            // drainer/flush NATS si nécessaire
             nc.flush(java.time.Duration.ofSeconds(2));
         } catch (Exception ignore) {
         }

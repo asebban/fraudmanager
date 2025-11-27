@@ -3,6 +3,7 @@ package ma.s2m.fraudmanager.config;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
+import ma.s2m.fraudmanager.service.QueryProcessor;
 import ma.s2m.fraudmanager.service.RocksDBService;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
@@ -38,6 +39,7 @@ public class AppConfig {
     public static int rocksDBQueueSize = 10_000;
     public static int appProcessorSubjectParallelismThreshold = 10;
     public static Long waitTime = 300000L;
+    public static String fraudQueryTopic = "";
 
     public AppConfig() {
         props = new Properties();
@@ -80,7 +82,6 @@ public class AppConfig {
             if (System.getenv("APP_THREAD_SESSION_POOL_SIZE") != null) {
                 appThreadSessionPoolSize = Integer.parseInt(System.getenv("APP_THREAD_SESSION_POOL_SIZE"));
             }
-            System.out.println("app.thread.session.pool.size = " + appThreadSessionPoolSize);
 
             ruleDeploymentDir = props.getProperty("drools.rules.deployment.dir");
             if (System.getenv("DROOLS_RULES_DEPLOYMENT_DIR") != null) {
@@ -140,6 +141,11 @@ public class AppConfig {
                 waitTime = Long.parseLong(System.getenv("APP_WAIT_TIME"));
             }
 
+            fraudQueryTopic = props.getProperty("fraud.query.topic", "fraud.query");
+            if (System.getenv("FRAUD_QUERY_TOPIC") != null) {
+                fraudQueryTopic = System.getenv("FRAUD_QUERY_TOPIC");
+            }
+
         } catch (Exception e) {
             logger.error("Error loading properties", e);
             throw new RuntimeException(e);
@@ -152,8 +158,9 @@ public class AppConfig {
             Connection nc = Nats.connect(NATS_PROTOCOL + natsHost + ":" + natsPort);
             ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
             RocksDBService rocksDBService = rocksDBService(rocksDBPath, rocksDBQueueSize);
-            FraudProcessor processor = new FraudProcessor(rocksDBService, nc);
-            return new NatsService(nc, executor, processor, rocksDBService, props);
+            FraudProcessor fraudProcessor = new FraudProcessor(rocksDBService, nc);
+            QueryProcessor queryProcessor = new QueryProcessor(rocksDBService, nc);
+            return new NatsService(nc, executor, fraudProcessor, queryProcessor, rocksDBService, props);
         } catch (Exception e) {
             throw new RuntimeException("Error creating NatsService", e);
         }
