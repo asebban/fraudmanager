@@ -119,7 +119,7 @@ public final class DroolsSessionFactory {
             }
         }
 
-        session.warmUp(); // charge/compile une première fois
+        //session.warmUp(); // charge/compile une première fois
         return session;
     }
 }

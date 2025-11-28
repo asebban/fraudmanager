@@ -6,6 +6,7 @@ import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.medtech.droolbuilder.utils.Utils;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
+import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
 import ma.s2m.fraudmanager.service.RocksDBService;
 import ma.s2m.fraudmanager.util.Subject;
@@ -135,8 +136,7 @@ public class Main {
             } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM) && ruleDefinition.getFixedWindow()) {
                 String customSubject = ruleDefinition.getCustomSubject();
                 String customSubjectKey = customSubject;
-                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubjectFixedWindow
-                        .get(customSubjectKey);
+                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubjectKey);
                 if (customWindows == null) {
                     customWindows = new HashMap<>();
                 }
@@ -192,12 +192,14 @@ public class Main {
             String cleanedGroupName = Utils.cleanGroupName(rule.getGroup());
             RulesConfig.ruleGroupSet.add(cleanedGroupName);
             Long windowSize = rule.getTimeFrame() * rule.getTimeframeUnit();
-            Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(rule.getSubject() + "/" + windowSize);
+            String subjectKey = Subject.CUSTOM.equals(rule.getSubject()) ? rule.getSubject() + FraudProcessor.KEY_SEPARATOR + rule.getCustomSubject() : rule.getSubject();
+            String windowKey = subjectKey + FraudProcessor.WINDOW_SEPARATOR + windowSize;
+            Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(windowKey);
             if (groupSet == null) {
                 groupSet = new HashSet<>();
             }
             groupSet.add(cleanedGroupName);
-            RulesConfig.ruleGroupsPerWindowSizeMap.put(rule.getSubject() + "/" + windowSize, groupSet);
+            RulesConfig.ruleGroupsPerWindowSizeMap.put(windowKey, groupSet);
         });
     }
 

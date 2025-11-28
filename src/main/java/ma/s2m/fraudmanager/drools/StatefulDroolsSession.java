@@ -19,11 +19,11 @@ import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
 import ma.s2m.fraudmanager.model.Measurment;
+import ma.s2m.fraudmanager.service.FraudProcessor;
 
 final class StatefulDroolsSession implements DroolsSession {
     private final KieSession ks;
-    private String subject;
-    private Long windowSize = 0L;
+    private String extendedSubject;
     private Boolean noRules = false;
     private Logger logger = org.slf4j.LoggerFactory.getLogger(StatefulDroolsSession.class);
     private Boolean droolsProfilerEnabled = AppConfig.droolsProfilerEnabled;
@@ -65,28 +65,25 @@ final class StatefulDroolsSession implements DroolsSession {
                 if (f instanceof Measurment) {
                     m = (Measurment) f;
                 }
-                if (f instanceof Long) {
-                    windowSize = (Long) f;
-                }
                 if (f instanceof String) {
                     String s = (String) f;
-                    if (s != null && s != "" && s != Subject.CARD && s != Subject.MERCHANT
-                            && !s.startsWith(Subject.CUSTOM) && s != Subject.ANY) {
+                    if (s != null && !s.equals("") && !s.equals(Subject.CARD) && !s.equals(Subject.MERCHANT)
+                            && !s.startsWith(Subject.CUSTOM)) {
                         this.correlationId = s;
                     } else {
-                        this.subject = (String) f;
+                        this.extendedSubject = s;
                     }
                 }
             }
 
-        Duration duration = Duration.ofMillis(windowSize);
+        Duration duration = Duration.ofMillis(m.getWindowSize());
         String formattedDuration = DurationFormatter.formatDuration(duration);
 
         if (droolsProfilerEnabled) {
             this.ruleProfiler.reset();
         }
 
-        Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(this.subject + "/" + windowSize);
+        Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(this.extendedSubject + FraudProcessor.WINDOW_SEPARATOR + m.getWindowSize());
         if (groupSet != null) {
             for (String groupName : groupSet) {
                 EntryPoint ep = this.entryPointsMap.get(groupName);
@@ -104,7 +101,7 @@ final class StatefulDroolsSession implements DroolsSession {
             ks.fireAllRules();
             Long t1 = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}", (t1 - t0),
-                    this.correlationId, this.subject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
+                    this.correlationId, this.extendedSubject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
                     m != null ? m.getKey() : "N/A", formattedDuration);
             if (droolsProfilerEnabled) {
                 final Measurment finalM = m;
@@ -112,20 +109,16 @@ final class StatefulDroolsSession implements DroolsSession {
                 this.ruleProfiler.reportTop(10).forEach(s -> {
                     logger.debug("[{}] trx {} - win {} : {} : {}", cId,
                             finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration,
-                            this.subject, s);
+                            this.extendedSubject, s);
                 });
             }
 
         } else {
-            // ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_ALERT + ":" +
-            // this.subject + "->" + formattedDuration).setFocus();
-            // ks.getAgenda().getAgendaGroup(RuleDefinition.RULE_TYPE_COMPUTE + ":" +
-            // this.subject + "->" + formattedDuration).setFocus();
             Long t0 = System.nanoTime();
             ks.fireAllRules();
             logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}",
                     (System.nanoTime() - t0) / 1_000_000, formattedDuration,
-                    m != null ? m.getTransaction().getTransactionNo() : "N/A", this.subject);
+                    m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
 
             if (droolsProfilerEnabled) {
                 this.ruleProfiler.reportTop(10).forEach(logger::debug);

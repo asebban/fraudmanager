@@ -10,15 +10,15 @@ public class TrxEntry implements Serializable {
 
     private VRTransactionSummary tx;
     private String txNo;
-    private long eventTimeMs;
+    private Long eventTimeMs;
     private Map<String, RecordsDelta> recordDelta;
     private Map<String, Object> lastsDelta;
 
     public VRTransactionSummary getTx() { return tx; }
     public void setTx(VRTransactionSummary tx) { this.tx = tx; }
 
-    public long getEventTimeMs() { return eventTimeMs; }
-    public void setEventTimeMs(long eventTimeMs) { this.eventTimeMs = eventTimeMs; }
+    public Long getEventTimeMs() { return eventTimeMs; }
+    public void setEventTimeMs(Long eventTimeMs) { this.eventTimeMs = eventTimeMs; }
 
     public Map<String, RecordsDelta> getRecordDelta() { return recordDelta; }
     public void setRecordDelta(Map<String, RecordsDelta> delta) { this.recordDelta = delta; }

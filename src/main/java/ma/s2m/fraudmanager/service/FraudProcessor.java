@@ -22,6 +22,7 @@ import ma.s2m.fraudmanager.model.MeasurmentRecord;
 import ma.s2m.fraudmanager.model.RecordsDelta;
 import ma.s2m.fraudmanager.model.TrxEntry;
 import ma.s2m.fraudmanager.model.TrxOrAlertEvent;
+import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.serializer.SerializationManager;
 import io.nats.client.Connection;
@@ -53,10 +54,13 @@ public class FraudProcessor {
 
     public static final String WINDOW_SEPARATOR = "/";
     public static final String KEY_SEPARATOR = ":";
+    public static final String FIXED_WINDOW_PREFIX = "FW:";
     public static final String CARD_KEY_PREFIX = Subject.CARD + KEY_SEPARATOR;
     public static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + KEY_SEPARATOR;
     public static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + KEY_SEPARATOR;
     public static final String NO_ERROR_MESSAGE = "";
+    public static final Integer FIXED_WINDOW = 1;
+    public static final Integer SLIDING_WINDOW = 2;
 
     private static final Logger logger = LoggerFactory.getLogger(FraudProcessor.class);
     private final RocksDBService rocksDBService;
@@ -137,31 +141,29 @@ public class FraudProcessor {
         this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
     }
 
-    private DroolsSession acquireSession(String subject, String correlationId, Long windowSize, String key) throws InterruptedException {
+    private DroolsSession acquireSession(String extendedSubject, Long windowSize, String key, String correlationId) throws InterruptedException {
 
-        String subjectKey = subject;
-        if (subject.contains(KEY_SEPARATOR)) {
-            subjectKey = subject.substring(0, subject.indexOf(KEY_SEPARATOR));
+        String subjectKey = extendedSubject;
+        if (extendedSubject.contains(KEY_SEPARATOR)) {
+            subjectKey = extendedSubject.substring(0, extendedSubject.indexOf(KEY_SEPARATOR));
         }
 
         Long beginAcquireSession = System.currentTimeMillis();
         BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
         if (pool == null) {
-            throw new IllegalArgumentException("No session pool for subject: " + subject);
+            throw new IllegalArgumentException("No session pool for subject: " + extendedSubject);
         }
         DroolsSession session = pool.take(); // Bloque si vide
         Long endAcquireSession = System.currentTimeMillis();
-        logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}",
-                (endAcquireSession - beginAcquireSession), correlationId, subject,
-                TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
+        logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
         return session;
     }
 
-    private void releaseSession(String subject, DroolsSession session) {
+    private void releaseSession(String extendedSubject, DroolsSession session) {
 
-        String subjectKey = subject;
-        if (subject.contains(KEY_SEPARATOR)) {
-            subjectKey = subject.substring(0, subject.indexOf(KEY_SEPARATOR));
+        String subjectKey = extendedSubject;
+        if (extendedSubject.contains(KEY_SEPARATOR)) {
+            subjectKey = extendedSubject.substring(0, extendedSubject.indexOf(KEY_SEPARATOR));
         }
 
         if (session != null) {
@@ -169,14 +171,22 @@ public class FraudProcessor {
                 session.clean(); // Nettoie les faits
                 sessionPools.get(subjectKey).offer(session);
             } catch (Exception e) {
-                logger.error("Error returning session to pool for subject: {}", subject, e);
+                logger.error("Error returning session to pool for subject: {}", extendedSubject, e);
                 // Recrée une session en cas d'erreur
                 sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
             }
         }
     }
 
-    private void executeSession(Long windowSize, Measurment measurment, String subject, String correlationId)
+    /**
+     * Executes the Drools session for the given measurment.
+     *
+     * @param measurment The measurment to process.
+     * @param extendedSubject    The subject of the measurment.
+     * @param correlationId The correlation ID for logging.
+     * @throws Exception If an error occurs during session execution.
+     */
+    private void executeSession(Measurment measurment, String extendedSubject, String correlationId)
             throws Exception {
 
         if (measurment == null) {
@@ -188,42 +198,41 @@ public class FraudProcessor {
         DroolsSession session = null;
         try {
             Long beginAcquireSession = System.currentTimeMillis();
-            session = acquireSession(subject, correlationId, windowSize, measurment.getKey());
+            session = acquireSession(extendedSubject, measurment.getWindowSize(), measurment.getKey(), correlationId);
             Long endAcquireSession = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration",
-                    (endAcquireSession - beginAcquireSession), correlationId, subject,
-                    TimeConversion.toHumanReadableDuration(windowSize), measurment.getKey());
-            session.execute(measurment, windowSize, subject, correlationId);
+            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
+            session.execute(measurment, extendedSubject, correlationId);
         } catch (Exception e) {
-            logger.error("Error executing session for subject: {}", subject, e);
+            logger.error("Error executing session for subject: {}", extendedSubject, e);
         } finally {
-            releaseSession(subject, session);
+            releaseSession(extendedSubject, session);
         }
     }
 
     @SuppressWarnings("unused")
     private void warmUpDrools(String subject, DroolsSession s) {
         VirtualRecordTransaction dummyTrx = TransactionDummyHelper.dummyTransaction();
-        Measurment m = createNewMeasument("card-1", subject, 10000L);
+        Measurment m = createNewMeasument("card-1", subject, null, 10000L);
         m.setTransaction(new VRTransactionSummary(dummyTrx));
         try {
             // on warm-up la session fournie
-            executeSession(10000L, m, subject, "XXXXX");
+            executeSession(m, subject, "XXXXX");
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private Measurment createNewMeasument(String key, String subject, Long windowSize) {
+    private Measurment createNewMeasument(String key, String subject, String customSubject, Long windowSize) {
         Measurment measurment = new Measurment();
         measurment.setKey(key);
         measurment.setSubject(subject);
+        measurment.setCustomSubject(customSubject);
         measurment.setWindowSize(windowSize);
         measurment.setTrxEntries(new ArrayList<>());
         return measurment;
     }
 
-    private AlertSet newAlertSet(TrxOrAlertEvent event, String subject) {
+    private AlertSet newAlertSet(TrxOrAlertEvent event, String subject, String customSubject) {
         AlertSet alertSet = new AlertSet();
         switch (subject) {
             case Subject.CARD:
@@ -233,14 +242,26 @@ public class FraudProcessor {
                 alertSet.setKey(event.getTransaction().getMerchant());
                 break;
             case Subject.CUSTOM:
-                alertSet.setKey(event.getAlertSet().getKey());
+                VRTransactionSummary trx = event.getTransaction();
+                String key;
+                try {
+                    key = customSubject == null || customSubject.isEmpty() ? trx.getKey("cardId") : trx.getKey(customSubject);
+                } catch (IllegalArgumentException | NoSuchFieldException e) {
+                    e.printStackTrace();
+                    logger.error("Error getting key from transaction with Transaction No {} and customSubject '{}', setting an empty key", trx.getTransactionNo(), customSubject);
+                    key = "";
+                }
+                alertSet.setKey(key);
                 break;
             default:
                 break;
         }
+        alertSet.setSubject(subject);
+        alertSet.setCustomSubject(customSubject);
         alertSet.setTopic(event.getTransaction().getTopic());
         alertSet.setAlertStatus(AlertSet.NO_ALERT);
         alertSet.setTransactionNo(event.getTransaction().getTransactionNo());
+        alertSet.setAlerts(new HashSet<>());
         return alertSet;
     }
 
@@ -543,22 +564,29 @@ public class FraudProcessor {
      * @param subject       The subject of the event.
      * @return The updated measurement.
      */
-    private Measurment processWindowSize(String key, Measurment measurment, Long windowSize, TrxOrAlertEvent event,
-            Long arrivalTime, String correlationId, String subject, String customSubject) {
-
-        VRTransactionSummary transaction = event.getTransaction();
-        transaction.setTimestamp(arrivalTime);
+    private Measurment processSlidingWindow(Measurment measurment, TrxOrAlertEvent event, Long arrivalTime, String correlationId) {
 
         if (measurment == null) {
-            measurment = createNewMeasument(key, subject, windowSize);
+            throw new RuntimeException("processWindowSize: measurment cannot be null");
         }
 
+        VRTransactionSummary transaction = event.getTransaction();
+        if (transaction == null) {
+            throw new RuntimeException("processWindowSize: transaction cannot be null");
+        }
+
+        transaction.setTimestamp(arrivalTime);
+
         List<TrxEntry> allTrx = measurment.getTrxEntries();
+        if (allTrx == null) {
+            throw new RuntimeException("processWindowSize: allTrx cannot be null");
+        }
+
         List<TrxEntry> expiredTrx = new ArrayList<>();
 
         for (Iterator<TrxEntry> it = allTrx.iterator(); it.hasNext();) {
             TrxEntry trxEntry = it.next();
-            if (measurment.expired(trxEntry, windowSize)) {
+            if (measurment.expired(trxEntry)) {
                 expiredTrx.add(trxEntry); // collect expired transaction in a temporary list
                 it.remove(); // remove expired transaction from the main list
             } else {
@@ -571,17 +599,13 @@ public class FraudProcessor {
             Long beginSubstract = System.currentTimeMillis();
             substractDelta(measurment, trxEntry);
             Long endSubstract = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: Substract delta for expired trx {}",
-                    (endSubstract - beginSubstract), correlationId, subject,
-                    TimeConversion.toHumanReadableDuration(windowSize), key, trxEntry.getTxNo());
+            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: Substract delta for expired trx {}", (endSubstract - beginSubstract), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), trxEntry.getTxNo());
         }
 
         Long cloneStart = System.currentTimeMillis();
         Measurment initialMeasurment = measurment.clone();
         Long cloneEnd = System.currentTimeMillis();
-        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment",
-                (cloneEnd - cloneStart), correlationId, subject, TimeConversion.toHumanReadableDuration(windowSize),
-                key, transaction.getTransactionNo());
+        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
         // Set the current transaction in the measurment for drools processing
         measurment.setTransaction(transaction);
@@ -590,19 +614,27 @@ public class FraudProcessor {
             // update the indicators in the measurment (with drools)
             Long beginExecute = System.currentTimeMillis();
 
-            String subjectKey = subject;
-            if (subjectKey.equalsIgnoreCase(Subject.CUSTOM)) {
-                subjectKey = subject + KEY_SEPARATOR + customSubject;
+            String extendedSubject = measurment.getSubject();
+            if (extendedSubject.equalsIgnoreCase(Subject.CUSTOM)) {
+                extendedSubject = measurment.getSubject() + KEY_SEPARATOR + measurment.getCustomSubject();
             }
 
-            executeSession(windowSize, measurment, subjectKey, correlationId);
+            executeSession(measurment, extendedSubject, correlationId);
             Long endExecute = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration",
-                    (endExecute - beginExecute), correlationId, subject,
-                    TimeConversion.toHumanReadableDuration(windowSize), key);
+            String subjectKey=measurment.getSubject();
+            if (Subject.CUSTOM.equals(measurment.getSubject())) {
+                subjectKey=measurment.getSubject()+KEY_SEPARATOR+measurment.getCustomSubject();
+            }
+
+            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration", (endExecute - beginExecute), correlationId, subjectKey, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
+
         } catch (Exception e) {
             logger.error("Error inserting and executing transaction in session: {}", e.getMessage());
             e.printStackTrace();
+        }
+
+        if (measurment.getAlertSet() != null && measurment.getAlertSet().hasAlerts()) {
+            logger.debug("[{}] [{}] win={} key={} trx={} ProcessFunction: Found {} alerts", correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo(), measurment.getAlertSet().getAlerts().size());
         }
 
         // add the transaction in the measurment (in the current window)
@@ -616,14 +648,72 @@ public class FraudProcessor {
         trxEntry.setLastsDelta(createLastsDelta(initialMeasurment, measurment));
         Long endCreateDelta = System.currentTimeMillis();
 
-        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Delta creation for trx {}",
-                (endCreateDelta - beginCreateDelta), correlationId, subject,
-                TimeConversion.toHumanReadableDuration(windowSize), key, trxEntry.getTxNo());
+        String subjectKey = measurment.getSubject();
+        if (Subject.CUSTOM.equals(measurment.getSubject())) {
+            subjectKey=measurment.getSubject()+KEY_SEPARATOR+measurment.getCustomSubject();
+        }
+        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Delta creation for trx {}", (endCreateDelta - beginCreateDelta), correlationId, subjectKey, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), trxEntry.getTxNo());
 
+        // add the transaction with its delta to the measurment
         measurment.getTrxEntries().add(trxEntry);
-        // Update the MapState
-        measurment.setAlertSet(completeAlertSet(measurment.getAlertSet(), event, subject));
+
+        // update the alert set
+        measurment.setAlertSet(completeAlertSet(measurment, event));
         return measurment;
+    }
+
+    /**
+     * Processes a fixed window by updating the measurement windows and merging
+     * alert sets.
+     *
+     * @param wm            The wrapper measurement object.
+     * @param event         The transaction or alert event.
+     * @param correlationId The correlation ID for logging.
+     * @return The processed fixed window.
+     */
+    private WrapperMeasurment processFixedWindow(WrapperMeasurment wm, TrxOrAlertEvent event, String correlationId) {
+
+        long now = System.currentTimeMillis();
+
+        VRTransactionSummary trx = event.getTransaction();
+        if (trx == null) {
+            throw new IllegalArgumentException("Transaction in event is null");
+        }
+
+        if (trx.getTimestamp() == null) {
+            trx.setTimestamp(now);
+        }
+
+        if (trx.getTimestamp() > wm.getWindowEndTime()) { // the fixed window expired
+            Measurment m = createNewMeasument(wm.getMeasurment().getKey(), wm.getMeasurment().getSubject(), wm.getMeasurment().getCustomSubject(), wm.getMeasurment().getWindowSize());
+            wm = WrapperMeasurment.createNewWrapperMeasurment(m, trx.getTimestamp());
+        }
+
+        // Set the current transaction in the measurment for drools processing
+        wm.getMeasurment().setTransaction(trx);
+
+        long t0 = System.nanoTime();
+        Long tend = t0;
+        try {
+            String extendedSubject = wm.getMeasurment().getSubject();
+            if (extendedSubject.equalsIgnoreCase(Subject.CUSTOM)) {
+                extendedSubject = wm.getMeasurment().getSubject() + KEY_SEPARATOR + wm.getMeasurment().getCustomSubject();
+            }
+
+            // update the indicators in the measurment (with drools)
+            executeSession(wm.getMeasurment(), extendedSubject, correlationId);
+        } catch (Exception e) {
+            logger.error("Error inserting and executing transaction in session: {}", e.getMessage());
+            e.printStackTrace();
+        }
+        finally {
+            tend = System.nanoTime();
+            logger.debug("Time {} ms [{}] win={} key={} ProcessFunction: Drools execution time for trx {}", (tend - t0) / 1_000_000L, correlationId, TimeConversion.toHumanReadableDuration(wm.getMeasurment().getWindowSize()), wm.getMeasurment().getKey(), wm.getMeasurment().getTransaction().getTransactionNo());
+        }
+
+        // Update the AlertSet
+        wm.getMeasurment().setAlertSet(completeAlertSet(wm.getMeasurment(), event));
+        return wm;      
     }
 
     /**
@@ -635,12 +725,15 @@ public class FraudProcessor {
      * @param subject  The subject of the event.
      * @return The completed alert set.
      */
-    private AlertSet completeAlertSet(AlertSet alertSet, TrxOrAlertEvent event, String subject) {
-        if (alertSet == null) {
+    private AlertSet completeAlertSet(Measurment measurment, TrxOrAlertEvent event) {
+
+        if (measurment.getAlertSet() == null) {
             logger.warn("AlertSet is null, should not happen");
             return null;
         }
-        alertSet.setTransactionNo(event.getTransaction().getTransactionNo());
+        measurment.getAlertSet().setTransactionNo(event.getTransaction().getTransactionNo());
+
+        AlertSet alertSet = measurment.getAlertSet();
         alertSet.setTopic(event.getTransaction().getTopic());
 
         if (alertSet.hasAlerts()) {
@@ -649,7 +742,7 @@ public class FraudProcessor {
             alertSet.setAlertStatus(AlertSet.NO_ALERT);
         }
 
-        switch (subject) {
+        switch (measurment.getSubject()) {
             case Subject.CARD:
                 alertSet.setKey(event.getTransaction().getCardId());
                 break;
@@ -674,13 +767,13 @@ public class FraudProcessor {
      * @return The merged alert set.
      */
     private AlertSet mergeAlertSets(AlertSet originalAlertSet, AlertSet newAlertSet) {
-        if (originalAlertSet == null || originalAlertSet.getAlerts() == null || originalAlertSet.getAlerts().isEmpty()) {
+        if (originalAlertSet == null || !originalAlertSet.hasAlerts()) {
             if (newAlertSet != null) {
                 newAlertSet.calculateScore(RulesConfig.alertRulesCount);
             }
-            return newAlertSet;
+            return newAlertSet != null ? newAlertSet : new AlertSet();
         }
-        if (newAlertSet == null || newAlertSet.getAlerts() == null || newAlertSet.getAlerts().isEmpty()) {
+        if (newAlertSet == null || !newAlertSet.hasAlerts()) {
             if (originalAlertSet != null) {
                 originalAlertSet.calculateScore(RulesConfig.alertRulesCount);
             }
@@ -693,6 +786,7 @@ public class FraudProcessor {
             originalAlertSet.setScore(newAlertSet.getScore());
             return originalAlertSet;
         }
+
         if (!newAlertSet.hasAlerts()) {
             originalAlertSet.calculateScore(RulesConfig.alertRulesCount);
             return originalAlertSet;
@@ -702,7 +796,7 @@ public class FraudProcessor {
             originalAlertSet.getAlerts().add(alert);
         }
 
-        if (originalAlertSet.getAlerts().isEmpty()) {
+        if (!originalAlertSet.hasAlerts()) {
             originalAlertSet.setAlertStatus(AlertSet.NO_ALERT);
             originalAlertSet.setScore(0.0);
         } else {
@@ -728,15 +822,13 @@ public class FraudProcessor {
             // Désérialiser
             long beforeDeserialize = System.currentTimeMillis();
             @SuppressWarnings("unchecked")
-            FraudCheckRequest<ITransaction> request = (FraudCheckRequest<ITransaction>) SerializationManager
-                    .deserialize(msg.getData());
+            FraudCheckRequest<ITransaction> request = (FraudCheckRequest<ITransaction>) SerializationManager.deserialize(msg.getData());
             long afterDeserialize = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Deserialization Time",
-                    (afterDeserialize - beforeDeserialize), correlationId, Thread.currentThread().getName(),
-                    request.getContent().getTransactionNo());
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Deserialization Time", (afterDeserialize - beforeDeserialize), correlationId, Thread.currentThread().getName(), request.getContent().getTransactionNo());
+
             VRTransactionSummary tx = new VRTransactionSummary(request.getContent());
             tx.setTopic(topic);
-            tx.setTimestamp(arrivalTime);
+            tx.setDateTimeOfTrx(tx.getAutTranDateTimeF007());
 
             long recv0 = System.currentTimeMillis();
             String sClientTs = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-client-publish-ts-ms");
@@ -745,34 +837,30 @@ public class FraudProcessor {
             long clientTs = sClientTs != null ? Long.parseLong(sClientTs) : 0L;
             long recvTs = sRecvTs != null ? Long.parseLong(sRecvTs) : recv0;
             long publishToReceiveMs = recvTs - clientTs;
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} Nats: Time between API publish and fraudmanager reception",
-                    publishToReceiveMs, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} Nats: Time between API publish and fraudmanager reception", publishToReceiveMs, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
             String cardKey = CARD_KEY_PREFIX + tx.getCardId();
             String merchantKey = MERCHANT_KEY_PREFIX + tx.getMerchant();
+
+            // create the initial event
             TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
 
-            // Traitement parallèle des subjects avec CompletableFuture
-            CompletableFuture<TrxOrAlertEvent> cardProcessing = null;
-            CompletableFuture<TrxOrAlertEvent> merchantProcessing = null;
-            CompletableFuture<TrxOrAlertEvent> customProcessing = null;
-
+            // parallel processing of subjects with CompletableFutures
             List<CompletableFuture<TrxOrAlertEvent>> cardProcessingFutures = new ArrayList<>();
             List<CompletableFuture<TrxOrAlertEvent>> merchantProcessingFutures = new ArrayList<>();
+            List<CompletableFuture<TrxOrAlertEvent>> customProcessingFutures = new ArrayList<>();
 
             Long endArrivalTime = System.currentTimeMillis();
-            logger.debug(
-                    "Time {} ms [{}] [Thread {}] trx={} process(): Pre-processing Time before starting the threads",
-                    (endArrivalTime - arrivalTime), correlationId, Thread.currentThread().getName(),
-                    tx.getTransactionNo());
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Pre-processing Time before starting the threads", (endArrivalTime - arrivalTime), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
-            if (RulesConfig.cardSubjectPresent) {
+            if (RulesConfig.cardSubjectPresent) { // There are rules for the sliding windows of card subject
+                // parallel processing of card subjects with CompletableFutures. There are more than one CompletableFuture for card subject 
+                // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
                 for (Map<Long, List<RuleDefinition>> ruleMapForCard : RulesConfig.rulesMapArrayForCardSubject) {
-                    cardProcessing = CompletableFuture.supplyAsync(() -> {
+                    CompletableFuture<TrxOrAlertEvent> cardProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             return keyProcessor.executeWithLock(cardKey, (key) -> {
-                                TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId,
-                                        Subject.CARD, null, ruleMapForCard, false);
+                                TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, ruleMapForCard, false);
                                 return cardEvent;
                             });
                         } catch (Exception e) {
@@ -785,13 +873,31 @@ public class FraudProcessor {
                 }
             }
 
-            if (RulesConfig.merchantSubjectPresent) {
+            if (RulesConfig.cardSubjectFixedWindowPresent) { // There are rules for the fixed windows of card subject
+                // Just one CompletableFuture for card subject fixed windows because most of the time there are sliding windows for card subject
+                CompletableFuture<TrxOrAlertEvent> cardProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return keyProcessor.executeWithLock(cardKey, (key) -> {
+                            TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, RulesConfig.rulesMapForCardSubjectFixedWindow, true);
+                            return cardEvent;
+                        });
+                    } catch (Exception e) {
+                        logger.error("Error processing card key: {}", cardKey, e);
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }, executor);
+                cardProcessingFutures.add(cardProcessingFixedWindow);
+            }
+
+            if (RulesConfig.merchantSubjectPresent) { // There are rules for the sliding windows of merchant subject         
+                // parallel processing of merchant subjects with CompletableFutures. There are more than one CompletableFuture for merchant subject 
+                // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
                 for (Map<Long, List<RuleDefinition>> ruleMapForMerchant : RulesConfig.rulesMapArrayForMerchantSubject) {
-                    merchantProcessing = CompletableFuture.supplyAsync(() -> {
+                    CompletableFuture<TrxOrAlertEvent> merchantProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             return keyProcessor.executeWithLock(merchantKey, (key) -> {
-                                TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId,
-                                        Subject.MERCHANT, null, ruleMapForMerchant, false);
+                                TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, ruleMapForMerchant, false);
                                 return merchantEvent;
                             });
                         } catch (Exception e) {
@@ -804,17 +910,32 @@ public class FraudProcessor {
                 }
             }
 
-            List<CompletableFuture<TrxOrAlertEvent>> customProcessingFutures = new ArrayList<>();
-            if (RulesConfig.customSubjectPresent) {
+            if (RulesConfig.merchantSubjectFixedWindowPresent) { // There are rules for the fixed windows of merchant subject
+                CompletableFuture<TrxOrAlertEvent> merchantProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return keyProcessor.executeWithLock(merchantKey, (key) -> {
+                            TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, RulesConfig.rulesMapForMerchantSubjectFixedWindow, true);
+                            return merchantEvent;
+                        });
+                    } catch (Exception e) {
+                        logger.error("Error processing merchant key: {}", merchantKey, e);
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }, executor);
+                merchantProcessingFutures.add(merchantProcessingFixedWindow);   
+            }
+
+            if (RulesConfig.customSubjectPresent) { // There are rules for the sliding windows of custom subject
+                // Each custom subject will be run by a completable future  
                 for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
                     String keySpec = customSubject;
                     String keyValue = event.getTransaction().getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
-                    customProcessing = CompletableFuture.supplyAsync(() -> {
+                    CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
-                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId,
-                                        Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
+                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
                                 return customEvent;
                             });
                         } catch (Exception e) {
@@ -827,12 +948,34 @@ public class FraudProcessor {
                 }
             }
 
-            // Attendre que les deux traitements se terminent et récupérer les résultats
+            if (RulesConfig.customSubjectFixedWindowPresent) { // There are rules for the fixed windows of custom subject
+                // Each custom subject fixed window will be run by a completable future
+                for (String customSubject : RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet()) {
+                    String keySpec = customSubject;
+                    String keyValue = event.getTransaction().getKey(keySpec);
+                    String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
+                    CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
+                        try {
+                            return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
+                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true);
+                                return customEvent;
+                            });
+                        } catch (Exception e) {
+                            logger.error("Error processing custom subject key: {}", customSubjectKey, e);
+                            Thread.currentThread().interrupt();
+                            return null;
+                        }
+                    }, executor);
+                    customProcessingFutures.add(customProcessingFixedWindow);
+                }
+            }
+
+            // Attendre que tous les traitements se terminent et récupérer les résultats
             List<CompletableFuture<TrxOrAlertEvent>> futures = new java.util.ArrayList<>();
-            if (cardProcessingFutures != null) {
+            if (cardProcessingFutures != null && !cardProcessingFutures.isEmpty()) {
                 futures.addAll(cardProcessingFutures);
             }
-            if (merchantProcessingFutures != null) {
+            if (merchantProcessingFutures != null && !merchantProcessingFutures.isEmpty()) {
                 futures.addAll(merchantProcessingFutures);
             }
             if (customProcessingFutures != null && !customProcessingFutures.isEmpty()) {
@@ -842,49 +985,26 @@ public class FraudProcessor {
             CompletableFuture<Void> allProcessing = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
             allProcessing.join();
             Long endOfJoin = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Duration of threads completion",
-                    endOfJoin - endArrivalTime, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Duration of threads completion", endOfJoin - endArrivalTime, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
             // Récupérer les résultats
             AlertSet combinedAlertSet = new AlertSet();
 
             try {
-                for (CompletableFuture<TrxOrAlertEvent> cp : cardProcessingFutures) {
-                    TrxOrAlertEvent cardEvent = cp != null ? cp.get() : null;
-                    if (cardEvent != null) {
-                        combinedAlertSet = mergeAlertSets(combinedAlertSet, cardEvent.getAlertSet());
+                for (CompletableFuture<TrxOrAlertEvent> future : futures) {
+                    TrxOrAlertEvent e = future != null ? future.get() : null;
+                    if (e != null) {
+                        combinedAlertSet = mergeAlertSets(combinedAlertSet, e.getAlertSet());
                     }
                 }
-
-                for (CompletableFuture<TrxOrAlertEvent> mp : merchantProcessingFutures) {
-                    TrxOrAlertEvent merchantEvent = mp != null ? mp.get() : null;
-                    if (merchantEvent != null) {
-                        combinedAlertSet = mergeAlertSets(combinedAlertSet, merchantEvent.getAlertSet());
-                    }
-                }
-
-                List<TrxOrAlertEvent> customEvents = new ArrayList<>();
-
-                for (CompletableFuture<TrxOrAlertEvent> customFuture : customProcessingFutures) {
-                    TrxOrAlertEvent customEvent = customFuture.get();
-                    if (customEvent != null) {
-                        customEvents.add(customEvent);
-                    }
-                }
-
-                for (TrxOrAlertEvent customEvent : customEvents) {
-                    combinedAlertSet = mergeAlertSets(combinedAlertSet, customEvent.getAlertSet());
-                }
-
             } catch (Exception e) {
                 logger.warn("Error retrieving processing results", e);
             }
-            Long resultAgregationEnd = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} duration of results aggregation",
-                    (resultAgregationEnd - endOfJoin), correlationId, Thread.currentThread().getName(),
-                    tx.getTransactionNo());
-            FraudCheckResponse response = new FraudCheckResponse();
 
+            Long resultAgregationEnd = System.currentTimeMillis();
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} duration of results aggregation", (resultAgregationEnd - endOfJoin), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
+
+            FraudCheckResponse response = new FraudCheckResponse();
             response.setAlertSet(combinedAlertSet);
             response.setCorrelationId(correlationId);
             response.setTimestamp(System.currentTimeMillis());
@@ -895,184 +1015,27 @@ public class FraudProcessor {
             Long beforeSerialize = System.currentTimeMillis();
             byte[] responseBytes = SerializationManager.serialize(response);
             Long afterSerialize = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Serialization Time",
-                    (afterSerialize - beforeSerialize), correlationId, Thread.currentThread().getName(),
-                    tx.getTransactionNo());
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Serialization Time", (afterSerialize - beforeSerialize), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
             natsConnection.publish(topic, responseBytes);
+
         } catch (Exception e) {
             e.printStackTrace();
             logger.error("Error processing transaction", e);
-        }
-    }
-
-    /**
-     * Processes a card event by updating the measurement windows and merging alert
-     * sets.
-     *
-     * @param event         The transaction or alert event.
-     * @param key           The key associated with the event.
-     * @param arrivalTime   The arrival time of the event.
-     * @param correlationId The correlation ID for logging.
-     * @return The processed card event.
-     */
-    private TrxOrAlertEvent processCardEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId,
-            Map<Long, List<RuleDefinition>> ruleMap) {
-
-        AlertSet alertSet = newAlertSet(event, Subject.CARD);
-        TrxOrAlertEvent cardEvent = buildEvent(event, alertSet);
-        String eventKey = CARD_KEY_PREFIX + key;
-
-        for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
-            Long ruleWindowSize = (Long) entry.getKey();
-            Long stateGetStart = System.currentTimeMillis();
-            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
-            Long stateGetEnd = System.currentTimeMillis();
-            logger.debug(
-                    "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCardEvent(): State retrieval time",
-                    (stateGetEnd - stateGetStart), correlationId, Subject.CARD, Thread.currentThread().getName(),
-                    TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    cardEvent.getTransaction().getTransactionNo());
-
-            Long beforeProcessWindowSize = System.currentTimeMillis();
-            measurment = processWindowSize(key, measurment, ruleWindowSize, cardEvent, arrivalTime, correlationId,
-                    Subject.CARD, null);
-            Long afterProcessWindowSize = System.currentTimeMillis();
-            logger.debug(
-                    "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCardEvent(): Duration of processing the window",
-                    (afterProcessWindowSize - beforeProcessWindowSize), correlationId, Subject.CARD,
-                    Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    cardEvent.getTransaction().getTransactionNo());
-
-            alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
-            measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
-            measurment.setTransaction(null); // clear transaction to avoid serialization issues
-
-            Long stateSetStart = System.currentTimeMillis();
-            rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize, measurment);
-            Long stateSetEnd = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCardEvent(): State set time",
-                    (stateSetEnd - stateSetStart), correlationId, Subject.CARD, Thread.currentThread().getName(),
-                    TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    cardEvent.getTransaction().getTransactionNo());
-        }
-
-        cardEvent.setAlertSet(alertSet);
-        return cardEvent;
-    }
-
-    /**
-     * Processes a merchant event by updating the measurement windows and merging
-     * alert sets.
-     *
-     * @param event         The transaction or alert event.
-     * @param key           The key associated with the event.
-     * @param arrivalTime   The arrival time of the event.
-     * @param correlationId The correlation ID for logging.
-     * @return The processed merchant event.
-     */
-    private TrxOrAlertEvent processMerchantEvent(TrxOrAlertEvent event, String key, Long arrivalTime,
-            String correlationId, Map<Long, List<RuleDefinition>> ruleMap) {
-        AlertSet alertSet = newAlertSet(event, Subject.MERCHANT);
-        TrxOrAlertEvent merchantEvent = buildEvent(event, alertSet);
-        String eventKey = MERCHANT_KEY_PREFIX + key;
-
-        for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
-            Long ruleWindowSize = (Long) entry.getKey();
-
-            Long stateGetStart = System.currentTimeMillis();
-            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
-            Long stateGetEnd = System.currentTimeMillis();
-            logger.debug(
-                    "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processMerchantEvent(): State retrieval time",
-                    (stateGetEnd - stateGetStart), correlationId, Subject.MERCHANT, Thread.currentThread().getName(),
-                    TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    event.getTransaction().getTransactionNo());
-
-            if (measurment == null) {
-                measurment = createNewMeasument(key, Subject.MERCHANT, ruleWindowSize);
+            FraudCheckResponse response = new FraudCheckResponse();
+            response.setAlertSet(null);
+            response.setCorrelationId(correlationId);
+            response.setTimestamp(System.currentTimeMillis());
+            response.setError(true);
+            response.setErrorMessage(e.getMessage());
+            byte[] responseBytes=null;
+            try {
+                responseBytes = SerializationManager.serialize(response);
+            } catch (IOException e1) {
+                e1.printStackTrace();
+                logger.error("Error serializing response", e1);
             }
-
-            Long beforeProcessWindowSize = System.currentTimeMillis();
-            measurment = processWindowSize(key, measurment, ruleWindowSize, merchantEvent, arrivalTime, correlationId,
-                    Subject.MERCHANT, null);
-            Long afterProcessWindowSize = System.currentTimeMillis();
-            logger.debug(
-                    "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processMerchantEvent: Duration of processWindowSize",
-                    (afterProcessWindowSize - beforeProcessWindowSize), correlationId, Subject.MERCHANT,
-                    Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    merchantEvent.getTransaction().getTransactionNo());
-
-            alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
-            measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
-            measurment.setTransaction(null); // clear transaction to avoid serialization issues
-
-            Long stateSetStart = System.currentTimeMillis();
-            rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize, measurment);
-            Long stateSetEnd = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processMerchantEvent: State set time",
-                    (stateSetEnd - stateSetStart), correlationId, Subject.MERCHANT, Thread.currentThread().getName(),
-                    TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    merchantEvent.getTransaction().getTransactionNo());
+            natsConnection.publish(topic, responseBytes);
         }
-
-        merchantEvent.setAlertSet(alertSet);
-        return merchantEvent;
-    }
-
-    /**
-     * Processes a custom event by updating the measurement windows and merging
-     * alert sets.
-     *
-     * @param event         The transaction or alert event.
-     * @param key           The key associated with the event.
-     * @param arrivalTime   The arrival time of the event.
-     * @param correlationId The correlation ID for logging.
-     * @return The processed custom event.
-     */
-    private TrxOrAlertEvent processCustomEvent(TrxOrAlertEvent event, String key, String customSubject,
-            Long arrivalTime, String correlationId) {
-        AlertSet alertSet = newAlertSet(event, Subject.ANY);
-        TrxOrAlertEvent customEvent = buildEvent(event, alertSet);
-        String eventKey = CUSTOM_KEY_PREFIX + key;
-
-        Map<Long, List<RuleDefinition>> rulesMapForCustomSubject = RulesConfig.rulesMapForCustomSubject
-                .get(customSubject);
-
-        for (Entry<Long, List<RuleDefinition>> entry : rulesMapForCustomSubject.entrySet()) {
-            Long ruleWindowSize = (Long) entry.getKey();
-
-            Long stateGetStart = System.currentTimeMillis();
-            Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
-            Long stateGetEnd = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCustomEvent: State get time",
-                    (stateGetEnd - stateGetStart), correlationId, Subject.CUSTOM + ":" + customSubject,
-                    Thread.currentThread().getName(),
-                    TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    customEvent.getTransaction().getTransactionNo());
-
-            if (measurment == null) {
-                measurment = createNewMeasument(key, Subject.CUSTOM, ruleWindowSize);
-            }
-
-            Long beforeProcessWindowSize = System.currentTimeMillis();
-            measurment = processWindowSize(key, measurment, ruleWindowSize, customEvent, arrivalTime, correlationId,
-                    Subject.CUSTOM, customSubject);
-            Long afterProcessWindowSize = System.currentTimeMillis();
-            logger.debug(
-                    "Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processCustomEvent: Duration of processWindowSize",
-                    (afterProcessWindowSize - beforeProcessWindowSize), correlationId,
-                    Subject.CUSTOM + ":" + customSubject,
-                    Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key,
-                    customEvent.getTransaction().getTransactionNo());
-
-            alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
-            measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
-            measurment.setTransaction(null); // clear transaction to avoid serialization issues
-            rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + measurment.getWindowSize(), measurment);
-        }
-
-        customEvent.setAlertSet(alertSet);
-        return customEvent;
     }
 
     /**
@@ -1085,19 +1048,94 @@ public class FraudProcessor {
      * @param subject       The subject of the event.
      * @return The processed event.
      */
-    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId,
-            String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow) {
-        switch (subject) {
-            case Subject.CARD:
-                return processCardEvent(event, key, arrivalTime, correlationId, ruleMap);
-            case Subject.MERCHANT:
-                return processMerchantEvent(event, key, arrivalTime, correlationId, ruleMap);
-            case Subject.CUSTOM:
-                return processCustomEvent(event, key, customSubject, arrivalTime, correlationId);
-            default:
-                logger.error("Unknown subject type: {}", subject);
-                return event;
+    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow) {
+
+        AlertSet alertSet = newAlertSet(event, subject, customSubject);
+        TrxOrAlertEvent processedEvent = buildEvent(event, alertSet);
+        String suffix = customSubject == null || customSubject.isEmpty() ? "" : customSubject + KEY_SEPARATOR;
+        String eventKey = subject + KEY_SEPARATOR + suffix + key;
+
+        Map<Long, List<RuleDefinition>> processedRulesMap = subject.equals(Subject.CUSTOM) ? RulesConfig.rulesMapForCustomSubject.get(customSubject) : ruleMap;
+
+        if (!fixedWindow) {
+
+            for (Entry<Long, List<RuleDefinition>> entry : processedRulesMap.entrySet()) {
+
+                Long ruleWindowSize = (Long) entry.getKey();
+                Long stateGetStart = System.currentTimeMillis();
+                Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
+                Long stateGetEnd = System.currentTimeMillis();
+                logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processEvent: State get time", (stateGetEnd - stateGetStart), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, processedEvent.getTransaction().getTransactionNo());
+
+                if (measurment == null) {
+                    measurment = createNewMeasument(key, subject, customSubject, ruleWindowSize);
+                }
+
+                Long beforeProcessWindowSize = System.currentTimeMillis();
+                measurment = processSlidingWindow(measurment, processedEvent, arrivalTime, correlationId);
+                Long afterProcessWindowSize = System.currentTimeMillis();
+                logger.debug("Time {} ms [{}] [{}] [Thread : {}] key={} trx={} processEvent: Duration of processSlidingWindow({})", (afterProcessWindowSize - beforeProcessWindowSize), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), key, processedEvent.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
+
+                if (measurment.getAlertSet() != null &&  measurment.getAlertSet().hasAlerts()) {
+                    logger.debug("****************Alerts found: {} in one future*********************", measurment.getAlertSet().getAlerts().size());
+                }
+
+                alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
+                measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
+                measurment.setTransaction(null); // clear transaction to avoid serialization issues
+                measurment.setGlobalRecords(null); // clear global records because they don't need to be stored with the timeramed measurment
+
+                // update the state of the measurment in the database
+                rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + measurment.getWindowSize(), measurment);
+            }
+            
+        } else { // fixed window
+            for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
+                Long ruleWindowSize = (Long) entry.getKey();
+                String fwEventKey = FIXED_WINDOW_PREFIX + eventKey;
+                Long beginProcessingWindow = System.currentTimeMillis();
+
+                // récupérer la mesure stockée pour cette clé depuis le ValueState
+                WrapperMeasurment wm=null;
+                try {
+                    // retrieve the state of the fixed window from the database
+                    long retrieveBegin = System.currentTimeMillis();
+                    wm = rocksDBService.getWrapperMeasurmentByKey(fwEventKey + WINDOW_SEPARATOR + ruleWindowSize);
+                    long retrieveEnd = System.currentTimeMillis();
+                    logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: Retrieving state for window {}", (retrieveEnd - retrieveBegin), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), TimeConversion.toHumanReadableDuration(ruleWindowSize), fwEventKey, TimeConversion.toHumanReadableDuration(ruleWindowSize));
+                }
+                catch (Exception e) {
+                    logger.error("FixedWindows: Error retrieving measurement state: {}", e.getMessage());
+                    e.printStackTrace();
+                }
+
+                if (wm == null) {
+                    wm = WrapperMeasurment.createNewWrapperMeasurment(createNewMeasument(key, subject, customSubject, ruleWindowSize), processedEvent.getTransaction().getTimestamp());
+                }
+            
+                wm = processFixedWindow(wm, processedEvent, correlationId);
+
+                alertSet = mergeAlertSets(alertSet, wm.getMeasurment().getAlertSet());
+                wm.getMeasurment().setAlertSet(null); // clear alert set to avoid duplication in next window
+                wm.getMeasurment().setTransaction(null); // clear transaction to avoid serialization issues
+                wm.getMeasurment().setGlobalRecords(null); // clear global records to avoid serialization issues
+                // update the state
+                try {
+                    long updateBegin = System.currentTimeMillis();
+                    rocksDBService.setWrapperMeasurmentByKey(fwEventKey + WINDOW_SEPARATOR + ruleWindowSize, wm);
+                    long updateEnd = System.currentTimeMillis();
+                    logger.debug("Time {} ms [{}] FixedWindows: [{}] win={} key={} ProcessFunction: Updating state for window {}", (updateEnd - updateBegin), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), TimeConversion.toHumanReadableDuration(ruleWindowSize), fwEventKey, TimeConversion.toHumanReadableDuration(ruleWindowSize));
+                } catch (Exception e) {
+                    logger.error("FixedWindows:Error updating measurement state: {}", e.getMessage());
+                    e.printStackTrace();
+                }
+                long endProcessingWindow = System.currentTimeMillis();
+                logger.debug("Time {} ms FixedWindows: [{}] [{}] [Trx {}] ProcessFunction: Time of processing fixed window {}", (endProcessingWindow - beginProcessingWindow), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), event.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
+            }
         }
+
+        processedEvent.setAlertSet(alertSet);
+        return processedEvent;
     }
 
     /**
@@ -1133,5 +1171,4 @@ public class FraudProcessor {
         logger.info("FraudProcessor shut down.");
 
     }
-
 }

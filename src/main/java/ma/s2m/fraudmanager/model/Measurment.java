@@ -23,20 +23,16 @@ public class Measurment implements Cloneable, Serializable {
 	private Long windowSize;
 	private VRTransactionSummary transaction;
 	private String subject; // The subject is the entity that is being tracked (Card, Merchant, ...)
-	private List<TrxEntry> trxEntries = new ArrayList<>(); // This list records all the transactions that have been
-															// processed in this measurment.
+	private String customSubject; // The custom subject is the entity that is being tracked (Card, Merchant, ...)
+	private List<TrxEntry> trxEntries = new ArrayList<>(); // This list records all the transactions that have been processed in this measurment.
 
 	private boolean applyAlerts = true;
 	private String key;
 
-	private RecordHashMap records = new RecordHashMap(); // This list records all the rule data for the current
-															// key.
-	private RecordHashMap globalRecords = new RecordHashMap(); // This list records all the rule global data for the
-																// current key.
-	private HashMap<String, Object> lasts = new HashMap<>(); // This hashmap records the last value of attributes for
-																// the concerned subject (Country, merchant, ...).
-	private HashMap<String, Integer> lastsCount = new HashMap<>(); // This hashmap records the count of occurrences of
-																	// the same attributes
+	private RecordHashMap records = new RecordHashMap(); // This list records all the rule data for the current key.
+	private RecordHashMap globalRecords = new RecordHashMap(); // This list records all the rule global data for the current key.
+	private HashMap<String, Object> lasts = new HashMap<>(); // This hashmap records the last value of attributes for the concerned subject (Country, merchant, ...).
+	private HashMap<String, Integer> lastsCount = new HashMap<>(); // This hashmap records the count of occurrences of the same attributes
 
 	private AlertSet alertSet = new AlertSet();
 
@@ -72,9 +68,9 @@ public class Measurment implements Cloneable, Serializable {
 		this.trxEntries.remove(trxEntry);
 	}
 
-	public boolean expired(TrxEntry trxEntry, Long windowSize) {
+	public boolean expired(TrxEntry trxEntry) {
 		Long now = System.currentTimeMillis();
-		return (now - trxEntry.getEventTimeMs()) > windowSize;
+		return (now - trxEntry.getEventTimeMs()) > this.windowSize;
 	}
 
 	public Measurment clone() {
@@ -266,6 +262,14 @@ public class Measurment implements Cloneable, Serializable {
 
 	public void setGlobalRecords(RecordHashMap globalRecords) {
 		this.globalRecords = globalRecords;
+	}
+
+	public String getCustomSubject() {
+		return customSubject;
+	}
+
+	public void setCustomSubject(String customSubject) {
+		this.customSubject = customSubject;
 	}
 
 }
