@@ -197,10 +197,7 @@ public class FraudProcessor {
         }
         DroolsSession session = null;
         try {
-            Long beginAcquireSession = System.currentTimeMillis();
             session = acquireSession(extendedSubject, measurment.getWindowSize(), measurment.getKey(), correlationId);
-            Long endAcquireSession = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
             session.execute(measurment, extendedSubject, correlationId);
         } catch (Exception e) {
             logger.error("Error executing session for subject: {}", extendedSubject, e);
