@@ -27,7 +27,6 @@ import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.serializer.SerializationManager;
 import io.nats.client.Connection;
 import io.nats.client.Message;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.Set;
 
 import java.io.FileNotFoundException;
@@ -71,7 +70,14 @@ public class FraudProcessor {
     private IMessageSender messageSender;
     private DroolsSessionFactory sessionFactory;
     private int sessionPoolSize = AppConfig.appThreadSessionPoolSize;
-    private Map<String, BlockingQueue<DroolsSession>> sessionPools = new ConcurrentHashMap<>();
+    private List<BlockingQueue<SubjectTask>> cardQueues = new ArrayList<>();
+    private List<BlockingQueue<SubjectTask>> merchantQueues = new ArrayList<>();
+    private Map<String, BlockingQueue<SubjectTask>> customQueues = new HashMap<>();
+    private BlockingQueue<SubjectTask> cardFixedWindowQueue;
+    private BlockingQueue<SubjectTask> merchantFixedWindowQueue;
+    private Map<String, BlockingQueue<SubjectTask>> customFixedWindowQueues = new HashMap<>();
+
+    private List<SubjectWorker> workers = new ArrayList<>();
 
     @SuppressWarnings("unused")
     private DroolsSession createNewDroolsSession() {
@@ -90,21 +96,85 @@ public class FraudProcessor {
         this.natsConnection = natsConnection;
         this.keyProcessor = new KeyProcessor(rocksDBService);
         initProcessor();
-        initializeSessionPools();
+        initializeWorkers();
     }
 
-    private void initializeSessionPools() {
-        Set<String> subjects = Set.of(Subject.CARD, Subject.MERCHANT, Subject.CUSTOM);
-        for (String subject : subjects) {
-            BlockingQueue<DroolsSession> queue = new ArrayBlockingQueue<>(sessionPoolSize);
-            for (int i = 0; i < sessionPoolSize; i++) {
-                DroolsSession session = createSessionForSubject(subject);
-                queue.offer(session);
+    private void initializeWorkers() {
+        int queueCapacity = 10000;
+
+        // Card Sliding
+        if (RulesConfig.cardSubjectPresent) {
+            for (int i = 0; i < RulesConfig.rulesMapArrayForCardSubject.size(); i++) {
+                BlockingQueue<SubjectTask> q = new ArrayBlockingQueue<>(queueCapacity);
+                cardQueues.add(q);
+                for (int w = 0; w < sessionPoolSize; w++) {
+                    SubjectWorker worker = new SubjectWorker(q, Subject.CARD, w);
+                    workers.add(worker);
+                    executor.submit(worker);
+                }
             }
-            sessionPools.put(subject, queue);
-            logger.info("Initialized Drools session pool for subject '{}' with {} sessions", subject,
-                    sessionPoolSize);
         }
+
+        // Card Fixed
+        if (RulesConfig.cardSubjectFixedWindowPresent) {
+            cardFixedWindowQueue = new ArrayBlockingQueue<>(queueCapacity);
+            for (int w = 0; w < sessionPoolSize; w++) {
+                SubjectWorker worker = new SubjectWorker(cardFixedWindowQueue, Subject.CARD, w);
+                workers.add(worker);
+                executor.submit(worker);
+            }
+        }
+
+        // Merchant Sliding
+        if (RulesConfig.merchantSubjectPresent) {
+            for (int i = 0; i < RulesConfig.rulesMapArrayForMerchantSubject.size(); i++) {
+                BlockingQueue<SubjectTask> q = new ArrayBlockingQueue<>(queueCapacity);
+                merchantQueues.add(q);
+                for (int w = 0; w < sessionPoolSize; w++) {
+                    SubjectWorker worker = new SubjectWorker(q, Subject.MERCHANT, w);
+                    workers.add(worker);
+                    executor.submit(worker);
+                }
+            }
+        }
+
+        // Merchant Fixed
+        if (RulesConfig.merchantSubjectFixedWindowPresent) {
+            merchantFixedWindowQueue = new ArrayBlockingQueue<>(queueCapacity);
+            for (int w = 0; w < sessionPoolSize; w++) {
+                SubjectWorker worker = new SubjectWorker(merchantFixedWindowQueue, Subject.MERCHANT, w);
+                workers.add(worker);
+                executor.submit(worker);
+            }
+        }
+
+        // Custom Sliding
+        if (RulesConfig.customSubjectPresent) {
+            for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
+                BlockingQueue<SubjectTask> q = new ArrayBlockingQueue<>(queueCapacity);
+                customQueues.put(customSubject, q);
+                for (int w = 0; w < sessionPoolSize; w++) {
+                    SubjectWorker worker = new SubjectWorker(q, Subject.CUSTOM, w);
+                    workers.add(worker);
+                    executor.submit(worker);
+                }
+            }
+        }
+
+        // Custom Fixed
+        if (RulesConfig.customSubjectFixedWindowPresent) {
+            for (String customSubject : RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet()) {
+                BlockingQueue<SubjectTask> q = new ArrayBlockingQueue<>(queueCapacity);
+                customFixedWindowQueues.put(customSubject, q);
+                for (int w = 0; w < sessionPoolSize; w++) {
+                    SubjectWorker worker = new SubjectWorker(q, Subject.CUSTOM, w);
+                    workers.add(worker);
+                    executor.submit(worker);
+                }
+            }
+        }
+        
+        logger.info("Initialized {} worker threads", workers.size());
     }
 
     private DroolsSession createSessionForSubject(String subject) {
@@ -141,42 +211,6 @@ public class FraudProcessor {
         this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
     }
 
-    private DroolsSession acquireSession(String extendedSubject, Long windowSize, String key, String correlationId) throws InterruptedException {
-
-        String subjectKey = extendedSubject;
-        if (extendedSubject.contains(KEY_SEPARATOR)) {
-            subjectKey = extendedSubject.substring(0, extendedSubject.indexOf(KEY_SEPARATOR));
-        }
-
-        Long beginAcquireSession = System.currentTimeMillis();
-        BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
-        if (pool == null) {
-            throw new IllegalArgumentException("No session pool for subject: " + extendedSubject);
-        }
-        DroolsSession session = pool.take(); // Bloque si vide
-        Long endAcquireSession = System.currentTimeMillis();
-        logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
-        return session;
-    }
-
-    private void releaseSession(String extendedSubject, DroolsSession session) {
-
-        String subjectKey = extendedSubject;
-        if (extendedSubject.contains(KEY_SEPARATOR)) {
-            subjectKey = extendedSubject.substring(0, extendedSubject.indexOf(KEY_SEPARATOR));
-        }
-
-        if (session != null) {
-            try {
-                session.clean(); // Nettoie les faits
-                sessionPools.get(subjectKey).offer(session);
-            } catch (Exception e) {
-                logger.error("Error returning session to pool for subject: {}", extendedSubject, e);
-                // Recrée une session en cas d'erreur
-                sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
-            }
-        }
-    }
 
     /**
      * Executes the Drools session for the given measurment.
@@ -186,7 +220,7 @@ public class FraudProcessor {
      * @param correlationId The correlation ID for logging.
      * @throws Exception If an error occurs during session execution.
      */
-    private void executeSession(Measurment measurment, String extendedSubject, String correlationId)
+    private void executeSession(Measurment measurment, String extendedSubject, String correlationId, DroolsSession session)
             throws Exception {
 
         if (measurment == null) {
@@ -195,14 +229,11 @@ public class FraudProcessor {
         if (measurment.getAlertSet() == null) {
             measurment.setAlertSet(new AlertSet());
         }
-        DroolsSession session = null;
         try {
-            session = acquireSession(extendedSubject, measurment.getWindowSize(), measurment.getKey(), correlationId);
             session.execute(measurment, extendedSubject, correlationId);
         } catch (Exception e) {
             logger.error("Error executing session for subject: {}", extendedSubject, e);
-        } finally {
-            releaseSession(extendedSubject, session);
+            throw e;
         }
     }
 
@@ -213,7 +244,7 @@ public class FraudProcessor {
         m.setTransaction(new VRTransactionSummary(dummyTrx));
         try {
             // on warm-up la session fournie
-            executeSession(m, subject, "XXXXX");
+            executeSession(m, subject, "XXXXX", s);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -561,7 +592,7 @@ public class FraudProcessor {
      * @param subject       The subject of the event.
      * @return The updated measurement.
      */
-    private Measurment processSlidingWindow(Measurment measurment, TrxOrAlertEvent event, Long arrivalTime, String correlationId) {
+    private Measurment processSlidingWindow(Measurment measurment, TrxOrAlertEvent event, Long arrivalTime, String correlationId, DroolsSession session) {
 
         if (measurment == null) {
             throw new RuntimeException("processWindowSize: measurment cannot be null");
@@ -616,7 +647,7 @@ public class FraudProcessor {
                 extendedSubject = measurment.getSubject() + KEY_SEPARATOR + measurment.getCustomSubject();
             }
 
-            executeSession(measurment, extendedSubject, correlationId);
+            executeSession(measurment, extendedSubject, correlationId, session);
             Long endExecute = System.currentTimeMillis();
             String subjectKey=measurment.getSubject();
             if (Subject.CUSTOM.equals(measurment.getSubject())) {
@@ -668,7 +699,7 @@ public class FraudProcessor {
      * @param correlationId The correlation ID for logging.
      * @return The processed fixed window.
      */
-    private WrapperMeasurment processFixedWindow(WrapperMeasurment wm, TrxOrAlertEvent event, String correlationId) {
+    private WrapperMeasurment processFixedWindow(WrapperMeasurment wm, TrxOrAlertEvent event, String correlationId, DroolsSession session) {
 
         long now = System.currentTimeMillis();
 
@@ -698,7 +729,7 @@ public class FraudProcessor {
             }
 
             // update the indicators in the measurment (with drools)
-            executeSession(wm.getMeasurment(), extendedSubject, correlationId);
+            executeSession(wm.getMeasurment(), extendedSubject, correlationId, session);
         } catch (Exception e) {
             logger.error("Error inserting and executing transaction in session: {}", e.getMessage());
             e.printStackTrace();
@@ -850,120 +881,95 @@ public class FraudProcessor {
             Long endArrivalTime = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Pre-processing Time before starting the threads", (endArrivalTime - arrivalTime), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
-            if (RulesConfig.cardSubjectPresent) { // There are rules for the sliding windows of card subject
-                // parallel processing of card subjects with CompletableFutures. There are more than one CompletableFuture for card subject 
-                // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
-                for (Map<Long, List<RuleDefinition>> ruleMapForCard : RulesConfig.rulesMapArrayForCardSubject) {
-                    CompletableFuture<TrxOrAlertEvent> cardProcessing = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return keyProcessor.executeWithLock(cardKey, (key) -> {
-                                TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, ruleMapForCard, false);
-                                return cardEvent;
-                            });
-                        } catch (Exception e) {
-                            logger.error("Error processing card key: {}", cardKey, e);
-                            Thread.currentThread().interrupt();
-                            return null;
-                        }
-                    }, executor);
-                    cardProcessingFutures.add(cardProcessing);
+            if (RulesConfig.cardSubjectPresent) { 
+                for (int i = 0; i < RulesConfig.rulesMapArrayForCardSubject.size(); i++) {
+                    Map<Long, List<RuleDefinition>> ruleMapForCard = RulesConfig.rulesMapArrayForCardSubject.get(i);
+                    CompletableFuture<TrxOrAlertEvent> future = new CompletableFuture<>();
+                    SubjectTask task = new SubjectTask(event, cardKey, arrivalTime, correlationId, Subject.CARD, null, ruleMapForCard, false, future);
+                    try {
+                        cardQueues.get(i).put(task);
+                        cardProcessingFutures.add(future);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        future.completeExceptionally(e);
+                    }
                 }
             }
 
-            if (RulesConfig.cardSubjectFixedWindowPresent) { // There are rules for the fixed windows of card subject
-                // Just one CompletableFuture for card subject fixed windows because most of the time there are sliding windows for card subject
-                CompletableFuture<TrxOrAlertEvent> cardProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return keyProcessor.executeWithLock(cardKey, (key) -> {
-                            TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, RulesConfig.rulesMapForCardSubjectFixedWindow, true);
-                            return cardEvent;
-                        });
-                    } catch (Exception e) {
-                        logger.error("Error processing card key: {}", cardKey, e);
-                        Thread.currentThread().interrupt();
-                        return null;
-                    }
-                }, executor);
-                cardProcessingFutures.add(cardProcessingFixedWindow);
-            }
-
-            if (RulesConfig.merchantSubjectPresent) { // There are rules for the sliding windows of merchant subject         
-                // parallel processing of merchant subjects with CompletableFutures. There are more than one CompletableFuture for merchant subject 
-                // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
-                for (Map<Long, List<RuleDefinition>> ruleMapForMerchant : RulesConfig.rulesMapArrayForMerchantSubject) {
-                    CompletableFuture<TrxOrAlertEvent> merchantProcessing = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return keyProcessor.executeWithLock(merchantKey, (key) -> {
-                                TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, ruleMapForMerchant, false);
-                                return merchantEvent;
-                            });
-                        } catch (Exception e) {
-                            logger.error("Error processing merchant key: {}", merchantKey, e);
-                            Thread.currentThread().interrupt();
-                            return null;
-                        }
-                    }, executor);
-                    merchantProcessingFutures.add(merchantProcessing);
+            if (RulesConfig.cardSubjectFixedWindowPresent) { 
+                CompletableFuture<TrxOrAlertEvent> future = new CompletableFuture<>();
+                SubjectTask task = new SubjectTask(event, cardKey, arrivalTime, correlationId, Subject.CARD, null, RulesConfig.rulesMapForCardSubjectFixedWindow, true, future);
+                try {
+                    cardFixedWindowQueue.put(task);
+                    cardProcessingFutures.add(future);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    future.completeExceptionally(e);
                 }
             }
 
-            if (RulesConfig.merchantSubjectFixedWindowPresent) { // There are rules for the fixed windows of merchant subject
-                CompletableFuture<TrxOrAlertEvent> merchantProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
+            if (RulesConfig.merchantSubjectPresent) { 
+                for (int i = 0; i < RulesConfig.rulesMapArrayForMerchantSubject.size(); i++) {
+                    Map<Long, List<RuleDefinition>> ruleMapForMerchant = RulesConfig.rulesMapArrayForMerchantSubject.get(i);
+                    CompletableFuture<TrxOrAlertEvent> future = new CompletableFuture<>();
+                    SubjectTask task = new SubjectTask(event, merchantKey, arrivalTime, correlationId, Subject.MERCHANT, null, ruleMapForMerchant, false, future);
                     try {
-                        return keyProcessor.executeWithLock(merchantKey, (key) -> {
-                            TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, RulesConfig.rulesMapForMerchantSubjectFixedWindow, true);
-                            return merchantEvent;
-                        });
-                    } catch (Exception e) {
-                        logger.error("Error processing merchant key: {}", merchantKey, e);
+                        merchantQueues.get(i).put(task);
+                        merchantProcessingFutures.add(future);
+                    } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
-                        return null;
+                        future.completeExceptionally(e);
                     }
-                }, executor);
-                merchantProcessingFutures.add(merchantProcessingFixedWindow);   
+                }
             }
 
-            if (RulesConfig.customSubjectPresent) { // There are rules for the sliding windows of custom subject
-                // Each custom subject will be run by a completable future  
+            if (RulesConfig.merchantSubjectFixedWindowPresent) { 
+                CompletableFuture<TrxOrAlertEvent> future = new CompletableFuture<>();
+                SubjectTask task = new SubjectTask(event, merchantKey, arrivalTime, correlationId, Subject.MERCHANT, null, RulesConfig.rulesMapForMerchantSubjectFixedWindow, true, future);
+                try {
+                    merchantFixedWindowQueue.put(task);
+                    merchantProcessingFutures.add(future);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    future.completeExceptionally(e);
+                }
+            }
+
+            if (RulesConfig.customSubjectPresent) { 
                 for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
                     String keySpec = customSubject;
                     String keyValue = event.getTransaction().getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
-                    CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
-                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
-                                return customEvent;
-                            });
-                        } catch (Exception e) {
-                            logger.error("Error processing custom subject key: {}", customSubjectKey, e);
-                            Thread.currentThread().interrupt();
-                            return null;
-                        }
-                    }, executor);
-                    customProcessingFutures.add(customProcessing);
+                    
+                    CompletableFuture<TrxOrAlertEvent> future = new CompletableFuture<>();
+                    SubjectTask task = new SubjectTask(event, customSubjectKey, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false, future);
+                    
+                    try {
+                        customQueues.get(customSubject).put(task);
+                        customProcessingFutures.add(future);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        future.completeExceptionally(e);
+                    }
                 }
             }
 
-            if (RulesConfig.customSubjectFixedWindowPresent) { // There are rules for the fixed windows of custom subject
-                // Each custom subject fixed window will be run by a completable future
+            if (RulesConfig.customSubjectFixedWindowPresent) { 
                 for (String customSubject : RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet()) {
                     String keySpec = customSubject;
                     String keyValue = event.getTransaction().getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
-                    CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
-                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true);
-                                return customEvent;
-                            });
-                        } catch (Exception e) {
-                            logger.error("Error processing custom subject key: {}", customSubjectKey, e);
-                            Thread.currentThread().interrupt();
-                            return null;
-                        }
-                    }, executor);
-                    customProcessingFutures.add(customProcessingFixedWindow);
+
+                    CompletableFuture<TrxOrAlertEvent> future = new CompletableFuture<>();
+                    SubjectTask task = new SubjectTask(event, customSubjectKey, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true, future);
+                    
+                    try {
+                        customFixedWindowQueues.get(customSubject).put(task);
+                        customProcessingFutures.add(future);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        future.completeExceptionally(e);
+                    }
                 }
             }
 
@@ -1045,7 +1051,7 @@ public class FraudProcessor {
      * @param subject       The subject of the event.
      * @return The processed event.
      */
-    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow) {
+    private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow, DroolsSession session) {
 
         AlertSet alertSet = newAlertSet(event, subject, customSubject);
         TrxOrAlertEvent processedEvent = buildEvent(event, alertSet);
@@ -1069,7 +1075,7 @@ public class FraudProcessor {
                 }
 
                 Long beforeProcessWindowSize = System.currentTimeMillis();
-                measurment = processSlidingWindow(measurment, processedEvent, arrivalTime, correlationId);
+                measurment = processSlidingWindow(measurment, processedEvent, arrivalTime, correlationId, session);
                 Long afterProcessWindowSize = System.currentTimeMillis();
                 logger.debug("Time {} ms [{}] [{}] [Thread : {}] key={} trx={} processEvent: Duration of processSlidingWindow({})", (afterProcessWindowSize - beforeProcessWindowSize), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), key, processedEvent.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
 
@@ -1110,7 +1116,7 @@ public class FraudProcessor {
                     wm = WrapperMeasurment.createNewWrapperMeasurment(createNewMeasument(key, subject, customSubject, ruleWindowSize), processedEvent.getTransaction().getTimestamp());
                 }
             
-                wm = processFixedWindow(wm, processedEvent, correlationId);
+                wm = processFixedWindow(wm, processedEvent, correlationId, session);
 
                 alertSet = mergeAlertSets(alertSet, wm.getMeasurment().getAlertSet());
                 wm.getMeasurment().setAlertSet(null); // clear alert set to avoid duplication in next window
@@ -1155,17 +1161,91 @@ public class FraudProcessor {
             }
         }
 
-        sessionPools.values().forEach(queue -> {
-            queue.forEach(session -> {
-                try {
-                    session.dispose();
-                } catch (Exception ignore) {
-                }
-            });
-            queue.clear();
-        });
-        sessionPools.clear();
+        workers.forEach(SubjectWorker::stop);
+        workers.clear();
+        cardQueues.clear();
+        merchantQueues.clear();
+        customQueues.clear();
+        if(cardFixedWindowQueue != null) cardFixedWindowQueue.clear();
+        if(merchantFixedWindowQueue != null) merchantFixedWindowQueue.clear();
+        customFixedWindowQueues.clear();
         logger.info("FraudProcessor shut down.");
 
+    }
+
+    private static class SubjectTask {
+        TrxOrAlertEvent event;
+        String key;
+        Long arrivalTime;
+        String correlationId;
+        String subject;
+        String customSubject;
+        Map<Long, List<RuleDefinition>> ruleMap;
+        Boolean fixedWindow;
+        CompletableFuture<TrxOrAlertEvent> future;
+
+        public SubjectTask(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow, CompletableFuture<TrxOrAlertEvent> future) {
+            this.event = event;
+            this.key = key;
+            this.arrivalTime = arrivalTime;
+            this.correlationId = correlationId;
+            this.subject = subject;
+            this.customSubject = customSubject;
+            this.ruleMap = ruleMap;
+            this.fixedWindow = fixedWindow;
+            this.future = future;
+        }
+    }
+
+    private class SubjectWorker implements Runnable {
+        private final BlockingQueue<SubjectTask> queue;
+        private final DroolsSession session;
+        private final String workerName;
+        private volatile boolean running = true;
+
+        public SubjectWorker(BlockingQueue<SubjectTask> queue, String subject, int id) {
+            this.queue = queue;
+            this.session = createSessionForSubject(subject);
+            this.workerName = "Worker-" + subject + "-" + id;
+        }
+
+        @Override
+        public void run() {
+            while (running) {
+                try {
+                    SubjectTask task = queue.take();
+                    try {
+                        TrxOrAlertEvent result = keyProcessor.executeWithLock(task.key, (k) -> {
+                            return processEvent(task.event, k, task.arrivalTime, task.correlationId, task.subject, task.customSubject, task.ruleMap, task.fixedWindow, session);
+                        });
+                        task.future.complete(result);
+                    } catch (Exception e) {
+                        logger.error("Error processing task in " + workerName, e);
+                        task.future.completeExceptionally(e);
+                    } finally {
+                        try {
+                            session.clean();
+                        } catch (Exception e) {
+                            logger.error("Error cleaning session in " + workerName, e);
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    running = false;
+                }
+            }
+            // Cleanup
+            if (session != null) {
+                try {
+                    session.dispose();
+                } catch (Exception e) {
+                    logger.error("Error disposing session in " + workerName, e);
+                }
+            }
+        }
+
+        public void stop() {
+            running = false;
+        }
     }
 }
