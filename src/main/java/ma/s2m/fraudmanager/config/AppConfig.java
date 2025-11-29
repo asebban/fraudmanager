@@ -40,6 +40,8 @@ public class AppConfig {
     public static int appProcessorSubjectParallelismThreshold = 10;
     public static Long waitTime = 300000L;
     public static String fraudQueryTopic = "";
+    public static int rocksDBShardCount = 4;
+    public static long rocksDBSubmitTimeoutMs = 100;
 
     public AppConfig() {
         props = new Properties();
@@ -144,6 +146,16 @@ public class AppConfig {
             fraudQueryTopic = props.getProperty("fraud.query.topic", "fraud.query");
             if (System.getenv("FRAUD_QUERY_TOPIC") != null) {
                 fraudQueryTopic = System.getenv("FRAUD_QUERY_TOPIC");
+            }
+
+            rocksDBShardCount = Integer.parseInt(props.getProperty("rocksdb.shard.count", "4"));
+            if (System.getenv("ROCKSDB_SHARD_COUNT") != null) {
+                rocksDBShardCount = Integer.parseInt(System.getenv("ROCKSDB_SHARD_COUNT"));
+            }
+
+            rocksDBSubmitTimeoutMs = Long.parseLong(props.getProperty("rocksdb.submit.timeout.ms", "100"));
+            if (System.getenv("ROCKSDB_SUBMIT_TIMEOUT_MS") != null) {
+                rocksDBSubmitTimeoutMs = Long.parseLong(System.getenv("ROCKSDB_SUBMIT_TIMEOUT_MS"));
             }
 
         } catch (Exception e) {

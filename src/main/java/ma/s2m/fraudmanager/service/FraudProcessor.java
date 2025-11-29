@@ -229,6 +229,14 @@ public class FraudProcessor {
         return measurment;
     }
 
+    /* 
+    * Create a new AlertSet based on the event
+    * 
+    * @param event The event to create the AlertSet from
+    * @param subject The subject of the event
+    * @param customSubject The custom subject of the event
+    * @return The new AlertSet
+    */
     private AlertSet newAlertSet(TrxOrAlertEvent event, String subject, String customSubject) {
         AlertSet alertSet = new AlertSet();
         switch (subject) {
@@ -262,6 +270,13 @@ public class FraudProcessor {
         return alertSet;
     }
 
+    /*
+    * Build a deep copy of the event from the previous event and the alert set
+    * 
+    * @param previousEvent The previous event
+    * @param alertSet The alert set to copy
+    * @return The new event
+    */
     private TrxOrAlertEvent buildEvent(TrxOrAlertEvent previousEvent, AlertSet alertSet) {
 
         if (previousEvent.getAlertSet() == null) {
@@ -549,16 +564,13 @@ public class FraudProcessor {
     }
 
     /**
-     * Processes the measurement window size and updates the measurement
+     * Processes the measurement sliding window and updates the measurement
      * accordingly.
      *
-     * @param key           The key associated with the measurement.
      * @param measurment    The measurement to process.
-     * @param windowSize    The size of the window.
      * @param event         The transaction or alert event.
      * @param arrivalTime   The arrival time of the event.
      * @param correlationId The correlation ID for logging.
-     * @param subject       The subject of the event.
      * @return The updated measurement.
      */
     private Measurment processSlidingWindow(Measurment measurment, TrxOrAlertEvent event, Long arrivalTime, String correlationId) {
@@ -571,8 +583,6 @@ public class FraudProcessor {
         if (transaction == null) {
             throw new RuntimeException("processWindowSize: transaction cannot be null");
         }
-
-        transaction.setTimestamp(arrivalTime);
 
         List<TrxEntry> allTrx = measurment.getTrxEntries();
         if (allTrx == null) {
@@ -602,7 +612,11 @@ public class FraudProcessor {
         Long cloneStart = System.currentTimeMillis();
         Measurment initialMeasurment = measurment.clone();
         Long cloneEnd = System.currentTimeMillis();
-        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
+        String subjectKey = measurment.getSubject();
+        if (Subject.CUSTOM.equals(measurment.getSubject())) {
+            subjectKey = measurment.getSubject() + KEY_SEPARATOR + measurment.getCustomSubject();
+        }
+        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, subjectKey, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
         // Set the current transaction in the measurment for drools processing
         measurment.setTransaction(transaction);
@@ -618,7 +632,7 @@ public class FraudProcessor {
 
             executeSession(measurment, extendedSubject, correlationId);
             Long endExecute = System.currentTimeMillis();
-            String subjectKey=measurment.getSubject();
+            subjectKey=measurment.getSubject();
             if (Subject.CUSTOM.equals(measurment.getSubject())) {
                 subjectKey=measurment.getSubject()+KEY_SEPARATOR+measurment.getCustomSubject();
             }
@@ -645,7 +659,7 @@ public class FraudProcessor {
         trxEntry.setLastsDelta(createLastsDelta(initialMeasurment, measurment));
         Long endCreateDelta = System.currentTimeMillis();
 
-        String subjectKey = measurment.getSubject();
+        subjectKey = measurment.getSubject();
         if (Subject.CUSTOM.equals(measurment.getSubject())) {
             subjectKey=measurment.getSubject()+KEY_SEPARATOR+measurment.getCustomSubject();
         }
@@ -682,6 +696,7 @@ public class FraudProcessor {
         }
 
         if (trx.getTimestamp() > wm.getWindowEndTime()) { // the fixed window expired
+            // create a new measurment and drop the old one
             Measurment m = createNewMeasument(wm.getMeasurment().getKey(), wm.getMeasurment().getSubject(), wm.getMeasurment().getCustomSubject(), wm.getMeasurment().getWindowSize());
             wm = WrapperMeasurment.createNewWrapperMeasurment(m, trx.getTimestamp());
         }
@@ -1073,10 +1088,6 @@ public class FraudProcessor {
                 Long afterProcessWindowSize = System.currentTimeMillis();
                 logger.debug("Time {} ms [{}] [{}] [Thread : {}] key={} trx={} processEvent: Duration of processSlidingWindow({})", (afterProcessWindowSize - beforeProcessWindowSize), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), key, processedEvent.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
 
-                if (measurment.getAlertSet() != null &&  measurment.getAlertSet().hasAlerts()) {
-                    logger.debug("****************Alerts found: {} in one future*********************", measurment.getAlertSet().getAlerts().size());
-                }
-
                 alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
                 measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
                 measurment.setTransaction(null); // clear transaction to avoid serialization issues
@@ -1089,7 +1100,7 @@ public class FraudProcessor {
         } else { // fixed window
             for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
                 Long ruleWindowSize = (Long) entry.getKey();
-                String fwEventKey = FIXED_WINDOW_PREFIX + eventKey;
+                String fwEventKey = subject + KEY_SEPARATOR + suffix + FIXED_WINDOW_PREFIX + key;
                 Long beginProcessingWindow = System.currentTimeMillis();
 
                 // récupérer la mesure stockée pour cette clé depuis le ValueState
