@@ -10,7 +10,11 @@ import io.nats.client.Nats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -18,6 +22,7 @@ import java.util.concurrent.Executors;
 public class AppConfig {
     private static final Logger logger = LoggerFactory.getLogger(AppConfig.class);
     private final Properties props;
+    private final Properties centralConfig;
     private static final String NATS_PROTOCOL = "nats://";
     public static String natsHost;
     public static int natsPort;
@@ -39,12 +44,18 @@ public class AppConfig {
     public static int rocksDBQueueSize = 10_000;
     public static int appProcessorSubjectParallelismThreshold = 10;
     public static Long waitTime = 300000L;
-    public static String fraudQueryTopic = "";
-    public static int rocksDBShardCount = 4;
+    public static String natsQueryTopic = "";
+    public static int rocksDBMemoryShardCount = 4;
     public static long rocksDBSubmitTimeoutMs = 100;
+    public static int rocksDBDiskShardCount = 64;
+    public static String rocksdbConfigFile = "";
+    public static String rocksdbNodeName = "";
+    public static List<Integer> rocksDBShards = new ArrayList<>();
+    public static Boolean fraudManagerMultiNode = false;
 
-    public AppConfig() {
+    public AppConfig(String[] args) throws IOException {
         props = new Properties();
+        centralConfig = new Properties();
         try (InputStream is = getClass().getResourceAsStream("/application.properties")) {
             props.load(is);
 
@@ -143,14 +154,14 @@ public class AppConfig {
                 waitTime = Long.parseLong(System.getenv("APP_WAIT_TIME"));
             }
 
-            fraudQueryTopic = props.getProperty("fraud.query.topic", "fraud.query");
-            if (System.getenv("FRAUD_QUERY_TOPIC") != null) {
-                fraudQueryTopic = System.getenv("FRAUD_QUERY_TOPIC");
+            natsQueryTopic = props.getProperty("nats.query.topic", "fraud.query");
+            if (System.getenv("NATS_QUERY_TOPIC") != null) {
+                natsQueryTopic = System.getenv("NATS_QUERY_TOPIC");
             }
 
-            rocksDBShardCount = Integer.parseInt(props.getProperty("rocksdb.shard.count", "4"));
-            if (System.getenv("ROCKSDB_SHARD_COUNT") != null) {
-                rocksDBShardCount = Integer.parseInt(System.getenv("ROCKSDB_SHARD_COUNT"));
+            rocksDBMemoryShardCount = Integer.parseInt(props.getProperty("rocksdb.memoryshard.count", "4"));
+            if (System.getenv("ROCKSDB_MEMORY_SHARD_COUNT") != null) {
+                rocksDBMemoryShardCount = Integer.parseInt(System.getenv("ROCKSDB_MEMORY_SHARD_COUNT"));
             }
 
             rocksDBSubmitTimeoutMs = Long.parseLong(props.getProperty("rocksdb.submit.timeout.ms", "100"));
@@ -158,9 +169,69 @@ public class AppConfig {
                 rocksDBSubmitTimeoutMs = Long.parseLong(System.getenv("ROCKSDB_SUBMIT_TIMEOUT_MS"));
             }
 
+            rocksdbConfigFile = props.getProperty("rocksdb.config.file");
+            if (System.getenv("ROCKSDB_CONFIG_FILE") != null) {
+                rocksdbConfigFile = System.getenv("ROCKSDB_CONFIG_FILE");
+            }
+
+            // Load node name from command-line args or property file
+            String nodeNameFromArgs = parseNodeNameFromArgs(args);
+            if (nodeNameFromArgs != null && !nodeNameFromArgs.isEmpty()) {
+                rocksdbNodeName = nodeNameFromArgs;
+                logger.info("Node name loaded from command-line: {}", rocksdbNodeName);
+            } else {
+                rocksdbNodeName = props.getProperty("rocksdb.default.node.name", "node-default");
+                if (System.getenv("ROCKSDB_NODE_NAME") != null) {
+                    rocksdbNodeName = System.getenv("ROCKSDB_NODE_NAME");
+                }
+                logger.info("Node name loaded from properties/env: {}", rocksdbNodeName);
+            }
         } catch (Exception e) {
             logger.error("Error loading properties", e);
             throw new RuntimeException(e);
+        }
+
+        if (rocksdbConfigFile != null && !rocksdbConfigFile.isEmpty()) {
+            try (InputStream cis = new FileInputStream(rocksdbConfigFile)) {
+                centralConfig.load(cis);
+                logger.info("Loaded central config from shared file: {}", rocksdbConfigFile);
+
+                rocksDBDiskShardCount = Integer.parseInt(centralConfig.getProperty("rocksdb.disk.shard.count", "64"));
+                if (System.getenv("ROCKSDB_DISK_SHARD_COUNT") != null) {
+                    rocksDBDiskShardCount = Integer.parseInt(System.getenv("ROCKSDB_DISK_SHARD_COUNT"));
+                }
+
+                fraudManagerMultiNode = Boolean.parseBoolean(centralConfig.getProperty("fraudmanager.multinode", "false"));
+                if (System.getenv("FRAUDMANAGER_MULTINODE") != null) {
+                    fraudManagerMultiNode = Boolean.parseBoolean(System.getenv("FRAUDMANAGER_MULTINODE"));
+                }
+
+            } catch (Throwable e) {
+                e.printStackTrace();
+                logger.error("Error loading central config, assuming single node", e);
+                rocksDBShards.add(0);
+                return;
+            }
+
+            String shardsProp = centralConfig.getProperty("rocksdb." + rocksdbNodeName + ".shards");
+            if (shardsProp != null && !shardsProp.isEmpty()) {
+                String[] parts = shardsProp.split(",");
+                for (String part : parts) {
+                    if (part.contains("-")) {
+                        String[] range = part.split("-");
+                        int start = Integer.parseInt(range[0].trim());
+                        int end = Integer.parseInt(range[1].trim());
+                        for (int i = start; i <= end; i++) {
+                            rocksDBShards.add(i);
+                        }
+                    } else {
+                        rocksDBShards.add(Integer.parseInt(part.trim()));
+                    }
+                }
+                logger.info("Loaded shards for node {}: {}", rocksdbNodeName, rocksDBShards);
+            } else {
+                logger.warn("No shards configuration found for node: {}", rocksdbNodeName);
+            }
         }
 
     }
@@ -195,6 +266,26 @@ public class AppConfig {
 
     public static String ruleTypePrefix(int ruleType) {
         return droolsRulesAgendaGroupRuleTypeEnabled ? ruleTypeConverter(ruleType) + ":" : "";
+    }
+
+    public Properties getCentralConfig() {
+        return centralConfig;
+    }
+
+    /**
+     * Parse node name from command-line arguments
+     * Expected format: --node.name nodeName
+     */
+    private static String parseNodeNameFromArgs(String[] args) {
+        if (args == null || args.length == 0) {
+            return null;
+        }
+        for (int i = 0; i < args.length - 1; i++) {
+            if ("--node.name".equals(args[i])) {
+                return args[i + 1];
+            }
+        }
+        return null;
     }
 
 }

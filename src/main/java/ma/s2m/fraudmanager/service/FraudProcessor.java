@@ -58,6 +58,7 @@ public class FraudProcessor {
     public static final String CARD_KEY_PREFIX = Subject.CARD + KEY_SEPARATOR;
     public static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + KEY_SEPARATOR;
     public static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + KEY_SEPARATOR;
+    public static final String LOCK_KEY_PREFIX = "lock:";
     public static final String NO_ERROR_MESSAGE = "";
     public static final Integer FIXED_WINDOW = 1;
     public static final Integer SLIDING_WINDOW = 2;

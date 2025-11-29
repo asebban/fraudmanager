@@ -29,7 +29,7 @@ public class Main {
         addShutdownHook();
 
         try {
-            AppConfig config = new AppConfig();
+            AppConfig config = new AppConfig(args);
             init(); // Initialisation des règles avant de démarrer le service NATS
             natsService = config.natsService();
             natsService.startConsumer(); // Démarre le consumer NATS et les workers
@@ -242,26 +242,26 @@ public class Main {
                     return;
                 }
                 logger.info("Intercepting shutdown signal. Cleaning up RocksDB keys...");
-                AppConfig config = new AppConfig();
+                AppConfig config = new AppConfig(new String[0]);
                 RocksDBService rocksDBService = config.rocksDBService(AppConfig.rocksDBPath,
                         AppConfig.rocksDBQueueSize);
                 // Supprimer les clés commençant par "Card:"
-                List<String> keys = rocksDBService.getKeysByPattern("Card:*");
+                List<String> keys = rocksDBService.getKeysByPattern(FraudProcessor.CARD_KEY_PREFIX + "*");
                 if (keys != null) {
                     keys.forEach(rocksDBService::deleteKey);
                 }
                 // Supprimer les clés commençant par "Merchant:"
-                keys = rocksDBService.getKeysByPattern("Merchant:*");
+                keys = rocksDBService.getKeysByPattern(FraudProcessor.MERCHANT_KEY_PREFIX + "*");
                 if (keys != null) {
                     keys.forEach(rocksDBService::deleteKey);
                 }
                 // Supprimer les clés commençant par "Custom:"
-                keys = rocksDBService.getKeysByPattern("Custom:*");
+                keys = rocksDBService.getKeysByPattern(FraudProcessor.CUSTOM_KEY_PREFIX + "*");
                 if (keys != null) {
                     keys.forEach(rocksDBService::deleteKey);
                 }
                 // Supprimer les clés commençant par "lock:"
-                keys = rocksDBService.getKeysByPattern("lock:*");
+                keys = rocksDBService.getKeysByPattern(FraudProcessor.LOCK_KEY_PREFIX + "*");
                 if (keys != null) {
                     keys.forEach(rocksDBService::deleteKey);
                 }

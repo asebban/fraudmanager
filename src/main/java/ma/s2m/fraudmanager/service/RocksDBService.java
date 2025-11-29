@@ -36,22 +36,47 @@ public class RocksDBService {
     private static final TypeReference<Map<Long, Measurment>> MEAS_MAP_TYPE =
             new TypeReference<Map<Long, Measurment>>() {};
 
-    // RocksDB handles
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfDefault;
-    private final ColumnFamilyHandle cfCard;
-    private final ColumnFamilyHandle cfMerchant;
-    private final ColumnFamilyHandle cfCustom;
+    // Multi-shard RocksDB handles
+    private final Map<Integer, RocksDB> shardedDbs;
+    private final Map<Integer, ColumnFamilyHandle> cfDefaultByShard;
+    private final Map<Integer, ColumnFamilyHandle> cfCardByShard;
+    private final Map<Integer, ColumnFamilyHandle> cfMerchantByShard;
+    private final Map<Integer, ColumnFamilyHandle> cfCustomByShard;
+    
+    // Shard configuration
+    private final int totalDiskShards;
+    private final List<Integer> assignedShards;
 
-    // Async writer (sharded)
-    private final AsyncRocksDbWriter writer;
+    // Async writers per shard
+    private final Map<Integer, AsyncRocksDbWriter> shardWriters;
 
     // Thread‑safe Fury for reads
     private final ThreadSafeFury readFury;
 
     public RocksDBService(String dbPath, int queueSize) {
         // -----------------------------------------------------------------
-        // Open RocksDB with column families
+        // Initialize shard configuration
+        // -----------------------------------------------------------------
+        this.totalDiskShards = AppConfig.rocksDBDiskShardCount;
+        this.assignedShards = new ArrayList<>(AppConfig.rocksDBShards);
+        if (this.assignedShards.isEmpty()) {
+            // Fallback: if no shards configured, assign shard 0
+            logger.warn("No shards assigned to this node, defaulting to shard 0");
+            this.assignedShards.add(0);
+        }
+        
+        this.shardedDbs = new HashMap<>();
+        this.cfDefaultByShard = new HashMap<>();
+        this.cfCardByShard = new HashMap<>();
+        this.cfMerchantByShard = new HashMap<>();
+        this.cfCustomByShard = new HashMap<>();
+        this.shardWriters = new HashMap<>();
+        
+        logger.info("Initializing RocksDB with {} total disk shards, assigned shards: {}", 
+                    totalDiskShards, assignedShards);
+
+        // -----------------------------------------------------------------
+        // Open RocksDB instance for each assigned shard
         // -----------------------------------------------------------------
         try {
             @SuppressWarnings("resource")
@@ -60,31 +85,42 @@ public class RocksDBService {
                     .setWriteBufferSize(64 * 1024 * 1024) // 64 MiB
                     .setMaxWriteBufferNumber(3)
                     .setTargetFileSizeBase(64 * 1024 * 1024);
+            
             List<ColumnFamilyDescriptor> cfDescriptors = Arrays.asList(
                     new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, defaultCFOptions),
                     new ColumnFamilyDescriptor(Subject.CARD.getBytes(StandardCharsets.UTF_8), defaultCFOptions),
                     new ColumnFamilyDescriptor(Subject.MERCHANT.getBytes(StandardCharsets.UTF_8), defaultCFOptions),
                     new ColumnFamilyDescriptor(Subject.CUSTOM.getBytes(StandardCharsets.UTF_8), defaultCFOptions)
             );
-            List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
+            
             @SuppressWarnings("resource")
             DBOptions dbOptions = new DBOptions()
                     .setCreateIfMissing(true)
                     .setCreateMissingColumnFamilies(true)
                     .setIncreaseParallelism(Runtime.getRuntime().availableProcessors());
-            this.db = RocksDB.open(dbOptions, dbPath, cfDescriptors, cfHandles);
-            this.cfDefault = cfHandles.get(0);
-            this.cfCard = cfHandles.get(1);
-            this.cfMerchant = cfHandles.get(2);
-            this.cfCustom = cfHandles.get(3);
+            
+            for (int shardId : assignedShards) {
+                String shardPath = dbPath + "/shard-" + shardId;
+                logger.info("Node: {}: Opening RocksDB shard {} at {}", AppConfig.rocksdbNodeName, shardId, shardPath);
+                
+                List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
+                RocksDB db = RocksDB.open(dbOptions, shardPath, cfDescriptors, cfHandles);
+                
+                shardedDbs.put(shardId, db);
+                cfDefaultByShard.put(shardId, cfHandles.get(0));
+                cfCardByShard.put(shardId, cfHandles.get(1));
+                cfMerchantByShard.put(shardId, cfHandles.get(2));
+                cfCustomByShard.put(shardId, cfHandles.get(3));
+                
+                // Create async writer for this shard
+                AsyncRocksDbWriter writer = AsyncRocksDbWriter.createInstance(db, queueSize, shardId);
+                shardWriters.put(shardId, writer);
+                
+                logger.info("Successfully opened RocksDB shard {}", shardId);
+            }
         } catch (RocksDBException e) {
-            throw new RuntimeException("Failed to open RocksDB with column families", e);
+            throw new RuntimeException("Failed to open RocksDB shards", e);
         }
-
-        // -----------------------------------------------------------------
-        // Async writer – it will reuse the same RocksDB instance
-        // -----------------------------------------------------------------
-        this.writer = AsyncRocksDbWriter.getInstance(this.db, queueSize);
 
         // -----------------------------------------------------------------
         // Fury for synchronous reads
@@ -95,24 +131,33 @@ public class RocksDBService {
                 .buildThreadSafeFury();
     }
 
-    /** Helper to pick the correct column family based on the key prefix */
-    private ColumnFamilyHandle getCFHandleForKey(String key) {
+    // -----------------------------------------------------------------
+    // SHARD ROUTING
+    // -----------------------------------------------------------------
+    
+    /** Calculate which shard should handle this key using consistent hashing */
+    private int calculateShardId(String key) {
+        return Math.abs(key.hashCode()) % totalDiskShards;
+    }
+    
+    /** Helper to pick the correct column family based on the key prefix for a specific shard */
+    private ColumnFamilyHandle getCFHandleForKey(int shardId, String key) {
         // Expected key format: subject[:custom]:key:windowSize
         int firstSep = key.indexOf(FraudProcessor.KEY_SEPARATOR);
         if (firstSep == -1) {
-            return cfDefault;
+            return cfDefaultByShard.get(shardId);
         }
         String subjectPart = key.substring(0, firstSep);
         switch (subjectPart) {
             case Subject.CARD:
-                return cfCard;
+                return cfCardByShard.get(shardId);
             case Subject.MERCHANT:
-                return cfMerchant;
+                return cfMerchantByShard.get(shardId);
             default:
                 if (subjectPart.startsWith(Subject.CUSTOM)) {
-                    return cfCustom;
+                    return cfCustomByShard.get(shardId);
                 }
-                return cfDefault;
+                return cfDefaultByShard.get(shardId);
         }
     }
 
@@ -122,7 +167,13 @@ public class RocksDBService {
     public Map<Long, Measurment> getMeasurments(String key) {
         return RetryUtil.retry(() -> {
             try {
-                ColumnFamilyHandle cf = getCFHandleForKey(key);
+                int shardId = calculateShardId(key);
+                RocksDB db = shardedDbs.get(shardId);
+                if (db == null) {
+                    logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                    return new HashMap<>();
+                }
+                ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
                 byte[] value = db.get(cf, toBytes(key));
                 if (value == null) {
                     logger.debug("Key {} not found, returning empty map", key);
@@ -138,7 +189,13 @@ public class RocksDBService {
 
     public Measurment getMeasurmentByKey(String key) {
         try {
-            ColumnFamilyHandle cf = getCFHandleForKey(key);
+            int shardId = calculateShardId(key);
+            RocksDB db = shardedDbs.get(shardId);
+            if (db == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return null;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
             if (v != null) {
                 return (Measurment) readFury.deserialize(v);
@@ -151,7 +208,13 @@ public class RocksDBService {
 
     public WrapperMeasurment getWrapperMeasurmentByKey(String key) {
         try {
-            ColumnFamilyHandle cf = getCFHandleForKey(key);
+            int shardId = calculateShardId(key);
+            RocksDB db = shardedDbs.get(shardId);
+            if (db == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return null;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
             if (v != null) {
                 return (WrapperMeasurment) readFury.deserialize(v);
@@ -167,7 +230,13 @@ public class RocksDBService {
     // -----------------------------------------------------------------
     public void setMeasurments(String key, Map<Long, Measurment> measurments) {
         RetryUtil.retry(() -> {
-            ColumnFamilyHandle cf = getCFHandleForKey(key);
+            int shardId = calculateShardId(key);
+            AsyncRocksDbWriter writer = shardWriters.get(shardId);
+            if (writer == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), measurments);
             if (!ok) {
                 logger.warn("Failed to persist measurments for key {} (queue full and fallback failed)", key);
@@ -180,7 +249,13 @@ public class RocksDBService {
     public void setMeasurmentByKey(String key, Measurment measurment) {
         long start = System.currentTimeMillis();
         RetryUtil.retry(() -> {
-            ColumnFamilyHandle cf = getCFHandleForKey(key);
+            int shardId = calculateShardId(key);
+            AsyncRocksDbWriter writer = shardWriters.get(shardId);
+            if (writer == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), measurment);
             if (!ok) {
                 logger.warn("Failed to persist measurment for key {} (queue full and fallback failed)", key);
@@ -195,7 +270,13 @@ public class RocksDBService {
     public void setWrapperMeasurmentByKey(String key, WrapperMeasurment wrapperMeasurment) {
         long start = System.currentTimeMillis();
         RetryUtil.retry(() -> {
-            ColumnFamilyHandle cf = getCFHandleForKey(key);
+            int shardId = calculateShardId(key);
+            AsyncRocksDbWriter writer = shardWriters.get(shardId);
+            if (writer == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), wrapperMeasurment);
             if (!ok) {
                 logger.warn("Failed to persist WrapperMeasurment for key {} (queue full and fallback failed)", key);
@@ -218,7 +299,13 @@ public class RocksDBService {
     // -----------------------------------------------------------------
     public void deleteKey(String key) {
         RetryUtil.retry(() -> {
-            ColumnFamilyHandle cf = getCFHandleForKey(key);
+            int shardId = calculateShardId(key);
+            AsyncRocksDbWriter writer = shardWriters.get(shardId);
+            if (writer == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             boolean ok = writer.submitDelete(cf, toBytes(key));
             if (!ok) {
                 logger.warn("Async delete queue is full, key {} NOT deleted now", key);
@@ -238,16 +325,25 @@ public class RocksDBService {
                     String prefix = pattern.substring(0, pattern.length() - 1);
                     byte[] prefixBytes = toBytes(prefix);
                     List<String> keys = new ArrayList<>();
-                    try (RocksIterator it = db.newIterator()) {
-                        for (it.seek(prefixBytes); it.isValid(); it.next()) {
-                            byte[] key = it.key();
-                            if (!startsWith(key, prefixBytes)) break;
-                            keys.add(fromBytes(key));
+                    // Search across all assigned shards
+                    for (int shardId : assignedShards) {
+                        RocksDB db = shardedDbs.get(shardId);
+                        if (db == null) continue;
+                        try (RocksIterator it = db.newIterator()) {
+                            for (it.seek(prefixBytes); it.isValid(); it.next()) {
+                                byte[] key = it.key();
+                                if (!startsWith(key, prefixBytes)) break;
+                                keys.add(fromBytes(key));
+                            }
                         }
                     }
                     logger.debug("Found {} keys matching prefix pattern: {}", keys.size(), pattern);
                     return keys;
                 } else {
+                    // Exact match - calculate shard
+                    int shardId = calculateShardId(pattern);
+                    RocksDB db = shardedDbs.get(shardId);
+                    if (db == null) return List.of();
                     byte[] v = db.get(toBytes(pattern));
                     return (v != null) ? List.of(pattern) : List.of();
                 }
@@ -263,11 +359,16 @@ public class RocksDBService {
             try {
                 byte[] prefixBytes = toBytes(prefix);
                 List<String> keys = new ArrayList<>();
-                try (RocksIterator it = db.newIterator()) {
-                    for (it.seek(prefixBytes); it.isValid(); it.next()) {
-                        byte[] key = it.key();
-                        if (!startsWith(key, prefixBytes)) break;
-                        keys.add(fromBytes(key));
+                // Search across all assigned shards
+                for (int shardId : assignedShards) {
+                    RocksDB db = shardedDbs.get(shardId);
+                    if (db == null) continue;
+                    try (RocksIterator it = db.newIterator()) {
+                        for (it.seek(prefixBytes); it.isValid(); it.next()) {
+                            byte[] key = it.key();
+                            if (!startsWith(key, prefixBytes)) break;
+                            keys.add(fromBytes(key));
+                        }
                     }
                 }
                 logger.debug("Found {} keys starting with: {}", keys.size(), prefix);
@@ -294,25 +395,38 @@ public class RocksDBService {
 
     /** Close all resources */
     public void close() {
-        writer.shutdown();
+        // Shutdown all shard writers
+        for (AsyncRocksDbWriter writer : shardWriters.values()) {
+            writer.shutdown();
+        }
+        
+        // Close all column families and databases for each shard
         try {
-            cfCard.close();
-            cfMerchant.close();
-            cfCustom.close();
-            cfDefault.close();
-            db.close();
+            for (int shardId : assignedShards) {
+                ColumnFamilyHandle cfCard = cfCardByShard.get(shardId);
+                ColumnFamilyHandle cfMerchant = cfMerchantByShard.get(shardId);
+                ColumnFamilyHandle cfCustom = cfCustomByShard.get(shardId);
+                ColumnFamilyHandle cfDefault = cfDefaultByShard.get(shardId);
+                RocksDB db = shardedDbs.get(shardId);
+                
+                if (cfCard != null) cfCard.close();
+                if (cfMerchant != null) cfMerchant.close();
+                if (cfCustom != null) cfCustom.close();
+                if (cfDefault != null) cfDefault.close();
+                if (db != null) db.close();
+                
+                logger.info("Closed RocksDB shard {}", shardId);
+            }
         } catch (Exception e) {
             logger.error("Error closing RocksDB resources", e);
         }
     }
 
     // -----------------------------------------------------------------
-    // Async writer – now receives the RocksDB instance and supports CFs
-    // -----------------------------------------------------------------
+    // Async writer – per shard instance
+    // ----------------------------------------------------------------- 
     private static class AsyncRocksDbWriter {
         private static final Logger logger = LoggerFactory.getLogger(AsyncRocksDbWriter.class);
-        private static volatile AsyncRocksDbWriter instance;
-
         private final RocksDB db;
         private final int shardCount;
         private final List<BlockingQueue<WriteRequest>> queues;
@@ -344,24 +458,18 @@ public class RocksDBService {
             logger.info("AsyncRocksDbWriter started with {} shards, queue size {} per shard", shardCount, queueSize);
         }
 
-        public static AsyncRocksDbWriter getInstance(RocksDB db, int queueSize) {
-            if (instance == null) {
-                synchronized (AsyncRocksDbWriter.class) {
-                    if (instance == null) {
-                        instance = new AsyncRocksDbWriter(db, queueSize, AppConfig.rocksDBSubmitTimeoutMs, AppConfig.rocksDBShardCount);
-                    }
-                }
-            }
-            return instance;
+        /** Create a  new instance for a specific shard - not using singleton pattern */
+        public static AsyncRocksDbWriter createInstance(RocksDB db, int queueSize, int shardId) {
+            return new AsyncRocksDbWriter(db, queueSize, AppConfig.rocksDBSubmitTimeoutMs, AppConfig.rocksDBMemoryShardCount);
         }
 
-        private int getShardIndex(byte[] key) {
+        private int getMemoryShardIndex(byte[] key) {
             return Math.abs(Arrays.hashCode(key)) % shardCount;
         }
 
         /** Submit a put operation for a specific column family */
         public boolean submitPutObjectWithCF(ColumnFamilyHandle cf, byte[] key, Object valueObj) {
-            int shard = getShardIndex(key);
+            int shard = getMemoryShardIndex(key);
             BlockingQueue<WriteRequest> queue = queues.get(shard);
             WriteRequest req = WriteRequest.putObjectWithCF(cf, key, valueObj);
             if (queue.offer(req)) return true;
@@ -384,7 +492,7 @@ public class RocksDBService {
 
         /** Delete operation (column‑family aware) */
         public boolean submitDelete(ColumnFamilyHandle cf, byte[] key) {
-            int shard = getShardIndex(key);
+            int shard = getMemoryShardIndex(key);
             BlockingQueue<WriteRequest> queue = queues.get(shard);
             WriteRequest req = WriteRequest.del(cf, key);
             if (queue.offer(req)) return true;

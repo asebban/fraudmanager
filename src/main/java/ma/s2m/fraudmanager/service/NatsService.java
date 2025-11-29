@@ -37,7 +37,7 @@ public class NatsService {
         this.queryProcessor = queryProcessor;
         this.rocksDBService = rocksDBService;
         this.topic = AppConfig.natsTopic;
-        this.queryTopic = AppConfig.fraudQueryTopic;
+        this.queryTopic = AppConfig.natsQueryTopic;
     }
 
     /**
@@ -64,7 +64,19 @@ public class NatsService {
                 }
             });
         });
-        dispatcher.subscribe(topic, "fraudmanager-group");
+        
+        if (!AppConfig.fraudManagerMultiNode) {
+            // Single-node mode: subscribe to single topic
+            dispatcher.subscribe(topic, "fraudmanager-group");
+            logger.info("Subscribed to single topic: {}", topic);
+        } else {
+            // Multi-node mode: subscribe to one topic per shard
+            for (Integer shardId : AppConfig.rocksDBShards) {
+                String shardTopic = "fraud.check." + shardId;
+                dispatcher.subscribe(shardTopic, "fraudmanager-group");
+                logger.info("Subscribed to shard topic: {}", shardTopic);
+            }
+        }
 
         // Dispatcher for fraud query topic – starts a placeholder thread on message
         // arrival
@@ -99,11 +111,12 @@ public class NatsService {
     public void stop() {
         try {
             if (dispatcher != null) {
-                dispatcher.unsubscribe(topic);
+                // The dispatcher will automatically unsubscribe from all topics when we call unsubscribe
+                // No need to track individual topics
                 dispatcher = null;
             }
             if (queryDispatcher != null) {
-                queryDispatcher.unsubscribe(AppConfig.fraudQueryTopic);
+                queryDispatcher.unsubscribe(AppConfig.natsQueryTopic);
                 queryDispatcher = null;
             }
         } catch (Exception e) {
