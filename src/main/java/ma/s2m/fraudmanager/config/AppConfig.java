@@ -5,24 +5,22 @@ import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
 import ma.s2m.fraudmanager.service.QueryProcessor;
 import ma.s2m.fraudmanager.service.RocksDBService;
+import ma.s2m.functions.Function;
+import ma.s2m.repository.IRepository;
+import ma.s2m.repository.PropertiesRepository;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class AppConfig {
     private static final Logger logger = LoggerFactory.getLogger(AppConfig.class);
-    private final Properties props;
-    private final Properties centralConfig;
     private static final String NATS_PROTOCOL = "nats://";
     public static String natsHost;
     public static int natsPort;
@@ -43,197 +41,74 @@ public class AppConfig {
     public static String rocksDBPath = "";
     public static int rocksDBQueueSize = 10_000;
     public static int appProcessorSubjectParallelismThreshold = 10;
+    public static String appProcessorRepositoryClass = "";
     public static Long waitTime = 300000L;
     public static String natsQueryTopic = "";
     public static int rocksDBMemoryShardCount = 4;
     public static long rocksDBSubmitTimeoutMs = 100;
     public static int rocksDBDiskShardCount = 64;
-    public static String rocksdbConfigFile = "";
+    public static String configFile = "";
     public static String rocksdbNodeName = "";
     public static List<Integer> rocksDBShards = new ArrayList<>();
     public static Boolean fraudManagerMultiNode = false;
 
     public AppConfig(String[] args) throws IOException {
-        props = new Properties();
-        centralConfig = new Properties();
-        try (InputStream is = getClass().getResourceAsStream("/application.properties")) {
-            props.load(is);
 
-            natsHost = props.getProperty("nats.host", "localhost");
-            if (System.getenv("NATS_HOST") != null) {
-                natsHost = System.getenv("NATS_HOST");
-            }
-            natsPort = Integer.parseInt(props.getProperty("nats.port", "4222"));
-            if (System.getenv("NATS_PORT") != null) {
-                natsPort = Integer.parseInt(System.getenv("NATS_PORT"));
-            }
-            natsTopic = props.getProperty("nats.topic", "fraud.check");
-            if (System.getenv("NATS_TOPIC") != null) {
-                natsTopic = System.getenv("NATS_TOPIC");
-            }
-            redisHost = props.getProperty("redis.host", "localhost");
-            if (System.getenv("REDIS_HOST") != null) {
-                redisHost = System.getenv("REDIS_HOST");
-            }
-            redisPort = Integer.parseInt(props.getProperty("redis.port", "6379"));
-            if (System.getenv("REDIS_PORT") != null) {
-                redisPort = Integer.parseInt(System.getenv("REDIS_PORT"));
-            }
-            redisDatabase = props.getProperty("redis.database", "0");
-            if (System.getenv("REDIS_DATABASE") != null) {
-                redisDatabase = System.getenv("REDIS_DATABASE");
-            }
-            redisUser = props.getProperty("redis.user", "default");
-            if (System.getenv("REDIS_USER") != null) {
-                redisUser = System.getenv("REDIS_USER");
-            }
-            redisPassword = props.getProperty("redis.password", "");
-            if (System.getenv("REDIS_PASSWORD") != null) {
-                redisPassword = System.getenv("REDIS_PASSWORD");
-            }
-            appThreadSessionPoolSize = Integer.parseInt(props.getProperty("app.thread.session.pool.size", "16"));
-            if (System.getenv("APP_THREAD_SESSION_POOL_SIZE") != null) {
-                appThreadSessionPoolSize = Integer.parseInt(System.getenv("APP_THREAD_SESSION_POOL_SIZE"));
-            }
+        IRepository localPropertyFile = new PropertiesRepository();
+        String repositoryClassName = localPropertyFile.getProperty("app.processor.repository.class", "ma.s2m.repository.PropertiesRepository");
+        IRepository centralRepository = (IRepository) Function.createDynamicClass(repositoryClassName);
+        centralRepository.load();
 
-            ruleDeploymentDir = props.getProperty("drools.rules.deployment.dir");
-            if (System.getenv("DROOLS_RULES_DEPLOYMENT_DIR") != null) {
-                ruleDeploymentDir = System.getenv("DROOLS_RULES_DEPLOYMENT_DIR");
-            }
-            if (ruleDeploymentDir == null || ruleDeploymentDir.isEmpty()) {
-                ruleDeploymentDir = "./rules";
-            }
-            droolsDebugEnabled = Boolean.parseBoolean(props.getProperty("drools.debug.enabled", "false"));
-            if (System.getenv("DROOLS_DEBUG_ENABLED") != null) {
-                droolsDebugEnabled = Boolean.parseBoolean(System.getenv("DROOLS_DEBUG_ENABLED"));
-            }
-            droolsProfilerEnabled = Boolean.parseBoolean(props.getProperty("drools.profiler.enabled", "false"));
-            if (System.getenv("DROOLS_PROFILER_ENABLED") != null) {
-                droolsProfilerEnabled = Boolean.parseBoolean(System.getenv("DROOLS_PROFILER_ENABLED"));
-            }
-            droolsRulesAgendaGroupRuleTypeEnabled = Boolean
-                    .parseBoolean(props.getProperty("drools.rules.agenda-group.ruletype.enabled", "false"));
-            if (System.getenv("DROOLS_RULES_AGENDA_GROUP_RULE_TYPE_ENABLED") != null) {
-                droolsRulesAgendaGroupRuleTypeEnabled = Boolean
-                        .parseBoolean(System.getenv("DROOLS_RULES_AGENDA_GROUP_RULE_TYPE_ENABLED"));
-            }
-            appProcessorMessagingProvider = props.getProperty("app.processor.messaging.provider", "NATS");
-            if (System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER") != null) {
-                appProcessorMessagingProvider = System.getenv("APP_PROCESSOR_MESSAGING_PROVIDER");
-            }
-            appRocksDBCleanOnShutdown = Boolean
-                    .parseBoolean(props.getProperty("app.rocksdb.clean.on.shutdown", "true"));
-            if (System.getenv("APP_ROCKSDB_CLEAN_ON_SHUTDOWN") != null) {
-                appRocksDBCleanOnShutdown = Boolean.parseBoolean(System.getenv("APP_ROCKSDB_CLEAN_ON_SHUTDOWN"));
-            }
+        natsHost = centralRepository.getProperty("nats.host", "localhost");
+        natsPort = Integer.parseInt(centralRepository.getProperty("nats.port", "4222"));
+        natsTopic = centralRepository.getProperty("nats.topic", "fraud.check");
 
-            repositoryWorkspaceDirectory = props.getProperty("drool.builder.repository.workspace.directory", "");
-            if (System.getenv().get("DROOL_BUILDER_REPOSITORY_WORKSPACE_DIRECTORY") != null) {
-                repositoryWorkspaceDirectory = System.getenv().get("DROOL_BUILDER_REPOSITORY_WORKSPACE_DIRECTORY");
-            }
+        redisHost = centralRepository.getProperty("redis.host", "localhost");
+        redisPort = Integer.parseInt(centralRepository.getProperty("redis.port", "6379"));
+        redisDatabase = centralRepository.getProperty("redis.database", "0");
+        redisUser = centralRepository.getProperty("redis.user", "default");
+        redisPassword = centralRepository.getProperty("redis.password", "");
 
-            rocksDBPath = props.getProperty("rocksdb.path", "./rocksdb_data");
-            if (System.getenv("ROCKSDB_PATH") != null) {
-                rocksDBPath = System.getenv("ROCKSDB_PATH");
-            }
+        appThreadSessionPoolSize = Integer.parseInt(centralRepository.getProperty("app.thread.session.pool.size", "16"));
+        appProcessorMessagingProvider = centralRepository.getProperty("app.processor.messaging.provider", "nats");
+        appProcessorRepositoryClass = centralRepository.getProperty("app.processor.repository.class", "ma.s2m.repository.PropertiesRepository");
 
-            rocksDBQueueSize = Integer.parseInt(props.getProperty("rocksdb.queue.size", "10000"));
-            if (System.getenv("ROCKSDB_QUEUE_SIZE") != null) {
-                rocksDBQueueSize = Integer.parseInt(System.getenv("ROCKSDB_QUEUE_SIZE"));
-            }
+        ruleDeploymentDir = centralRepository.getProperty("drools.rules.deployment.dir", "./rules");
+        droolsDebugEnabled = Boolean.parseBoolean(centralRepository.getProperty("drools.debug.enabled", "false"));
+        droolsProfilerEnabled = Boolean.parseBoolean(centralRepository.getProperty("drools.profiler.enabled", "false"));
+        droolsRulesAgendaGroupRuleTypeEnabled = Boolean.parseBoolean(centralRepository.getProperty("drools.rules.agenda.group.rule.type.enabled", "false"));
+        appRocksDBCleanOnShutdown = Boolean.parseBoolean(centralRepository.getProperty("app.rocksdb.clean.on.shutdown", "false"));
+        repositoryWorkspaceDirectory = centralRepository.getProperty("drool.builder.repository.workspace.directory", "./workspace");
+        rocksDBPath = centralRepository.getProperty("rocksdb.path", "./rocksdb");
+        rocksDBQueueSize = Integer.parseInt(centralRepository.getProperty("rocksdb.queue.size", "10000"));
+        appProcessorSubjectParallelismThreshold = Integer.parseInt(centralRepository.getProperty("app.processor.subject.parallelism.threshold", "10"));
+        waitTime = Long.parseLong(centralRepository.getProperty("wait.time", "300000"));
+        natsQueryTopic = centralRepository.getProperty("nats.query.topic", "");
+        rocksDBMemoryShardCount = Integer.parseInt(centralRepository.getProperty("rocksdb.memory.shard.count", "4"));
+        rocksDBSubmitTimeoutMs = Long.parseLong(centralRepository.getProperty("rocksdb.submit.timeout.ms", "100"));
+        rocksDBDiskShardCount = Integer.parseInt(centralRepository.getProperty("rocksdb.disk.shard.count", "64"));
+        rocksdbNodeName = centralRepository.getProperty("node.name", "node-0");
+        fraudManagerMultiNode = Boolean.parseBoolean(centralRepository.getProperty("fraud.manager.multi.node", "false"));
 
-            appProcessorSubjectParallelismThreshold = Integer
-                    .parseInt(props.getProperty("app.processor.subject.parallelism.threshold", "10"));
-            if (System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD") != null) {
-                appProcessorSubjectParallelismThreshold = Integer
-                        .parseInt(System.getenv("APP_PROCESSOR_SUBJECT_PARALLELISM_THRESHOLD"));
-            }
-
-            waitTime = Long.parseLong(props.getProperty("app.wait.time", "300000"));
-            if (System.getenv("APP_WAIT_TIME") != null) {
-                waitTime = Long.parseLong(System.getenv("APP_WAIT_TIME"));
-            }
-
-            natsQueryTopic = props.getProperty("nats.query.topic", "fraud.query");
-            if (System.getenv("NATS_QUERY_TOPIC") != null) {
-                natsQueryTopic = System.getenv("NATS_QUERY_TOPIC");
-            }
-
-            rocksDBMemoryShardCount = Integer.parseInt(props.getProperty("rocksdb.memoryshard.count", "4"));
-            if (System.getenv("ROCKSDB_MEMORY_SHARD_COUNT") != null) {
-                rocksDBMemoryShardCount = Integer.parseInt(System.getenv("ROCKSDB_MEMORY_SHARD_COUNT"));
-            }
-
-            rocksDBSubmitTimeoutMs = Long.parseLong(props.getProperty("rocksdb.submit.timeout.ms", "100"));
-            if (System.getenv("ROCKSDB_SUBMIT_TIMEOUT_MS") != null) {
-                rocksDBSubmitTimeoutMs = Long.parseLong(System.getenv("ROCKSDB_SUBMIT_TIMEOUT_MS"));
-            }
-
-            rocksdbConfigFile = props.getProperty("rocksdb.config.file");
-            if (System.getenv("ROCKSDB_CONFIG_FILE") != null) {
-                rocksdbConfigFile = System.getenv("ROCKSDB_CONFIG_FILE");
-            }
-
-            // Load node name from command-line args or property file
-            String nodeNameFromArgs = parseNodeNameFromArgs(args);
-            if (nodeNameFromArgs != null && !nodeNameFromArgs.isEmpty()) {
-                rocksdbNodeName = nodeNameFromArgs;
-                logger.info("Node name loaded from command-line: {}", rocksdbNodeName);
-            } else {
-                rocksdbNodeName = props.getProperty("rocksdb.default.node.name", "node-default");
-                if (System.getenv("ROCKSDB_NODE_NAME") != null) {
-                    rocksdbNodeName = System.getenv("ROCKSDB_NODE_NAME");
-                }
-                logger.info("Node name loaded from properties/env: {}", rocksdbNodeName);
-            }
-        } catch (Exception e) {
-            logger.error("Error loading properties", e);
-            throw new RuntimeException(e);
-        }
-
-        if (rocksdbConfigFile != null && !rocksdbConfigFile.isEmpty()) {
-            try (InputStream cis = new FileInputStream(rocksdbConfigFile)) {
-                centralConfig.load(cis);
-                logger.info("Loaded central config from shared file: {}", rocksdbConfigFile);
-
-                rocksDBDiskShardCount = Integer.parseInt(centralConfig.getProperty("rocksdb.disk.shard.count", "64"));
-                if (System.getenv("ROCKSDB_DISK_SHARD_COUNT") != null) {
-                    rocksDBDiskShardCount = Integer.parseInt(System.getenv("ROCKSDB_DISK_SHARD_COUNT"));
-                }
-
-                fraudManagerMultiNode = Boolean.parseBoolean(centralConfig.getProperty("fraudmanager.multinode", "false"));
-                if (System.getenv("FRAUDMANAGER_MULTINODE") != null) {
-                    fraudManagerMultiNode = Boolean.parseBoolean(System.getenv("FRAUDMANAGER_MULTINODE"));
-                }
-
-            } catch (Throwable e) {
-                e.printStackTrace();
-                logger.error("Error loading central config, assuming single node", e);
-                rocksDBShards.add(0);
-                return;
-            }
-
-            String shardsProp = centralConfig.getProperty("rocksdb." + rocksdbNodeName + ".shards");
-            if (shardsProp != null && !shardsProp.isEmpty()) {
-                String[] parts = shardsProp.split(",");
-                for (String part : parts) {
-                    if (part.contains("-")) {
-                        String[] range = part.split("-");
-                        int start = Integer.parseInt(range[0].trim());
-                        int end = Integer.parseInt(range[1].trim());
-                        for (int i = start; i <= end; i++) {
-                            rocksDBShards.add(i);
-                        }
-                    } else {
-                        rocksDBShards.add(Integer.parseInt(part.trim()));
+        String shardsProp = centralRepository.getProperty("rocksdb." + rocksdbNodeName + ".shards", "0");
+        if (shardsProp != null && !shardsProp.isEmpty()) {
+            String[] parts = shardsProp.split(",");
+            for (String part : parts) {
+                if (part.contains("-")) {
+                    String[] range = part.split("-");
+                    int start = Integer.parseInt(range[0].trim());
+                    int end = Integer.parseInt(range[1].trim());
+                    for (int i = start; i <= end; i++) {
+                        rocksDBShards.add(i);
                     }
+                } else {
+                    rocksDBShards.add(Integer.parseInt(part.trim()));
                 }
-                logger.info("Loaded shards for node {}: {}", rocksdbNodeName, rocksDBShards);
-            } else {
-                logger.warn("No shards configuration found for node: {}", rocksdbNodeName);
             }
+            logger.info("Loaded shards for node {}: {}", rocksdbNodeName, rocksDBShards);
+        } else {
+            logger.warn("No shards configuration found for node: {}", rocksdbNodeName);
         }
-
     }
 
     public NatsService natsService() {
@@ -243,7 +118,7 @@ public class AppConfig {
             RocksDBService rocksDBService = rocksDBService(rocksDBPath, rocksDBQueueSize);
             FraudProcessor fraudProcessor = new FraudProcessor(rocksDBService, nc);
             QueryProcessor queryProcessor = new QueryProcessor(rocksDBService, nc);
-            return new NatsService(nc, executor, fraudProcessor, queryProcessor, rocksDBService, props);
+            return new NatsService(nc, executor, fraudProcessor, queryProcessor, rocksDBService);
         } catch (Exception e) {
             throw new RuntimeException("Error creating NatsService", e);
         }
@@ -266,26 +141,6 @@ public class AppConfig {
 
     public static String ruleTypePrefix(int ruleType) {
         return droolsRulesAgendaGroupRuleTypeEnabled ? ruleTypeConverter(ruleType) + ":" : "";
-    }
-
-    public Properties getCentralConfig() {
-        return centralConfig;
-    }
-
-    /**
-     * Parse node name from command-line arguments
-     * Expected format: --node.name nodeName
-     */
-    private static String parseNodeNameFromArgs(String[] args) {
-        if (args == null || args.length == 0) {
-            return null;
-        }
-        for (int i = 0; i < args.length - 1; i++) {
-            if ("--node.name".equals(args[i])) {
-                return args[i + 1];
-            }
-        }
-        return null;
     }
 
 }

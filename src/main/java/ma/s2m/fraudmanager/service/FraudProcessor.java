@@ -24,6 +24,7 @@ import ma.s2m.fraudmanager.model.TrxEntry;
 import ma.s2m.fraudmanager.model.TrxOrAlertEvent;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.util.Subject;
+import ma.s2m.functions.Function;
 import ma.s2m.serializer.SerializationManager;
 import io.nats.client.Connection;
 import io.nats.client.Message;
@@ -866,7 +867,10 @@ public class FraudProcessor {
             Long endArrivalTime = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Pre-processing Time before starting the threads", (endArrivalTime - arrivalTime), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
-            if (RulesConfig.cardSubjectPresent) { // There are rules for the sliding windows of card subject
+            int cardKeyShard = Function.calculateShardId(cardKey, AppConfig.rocksDBDiskShardCount);
+            Boolean isCardRightShard = AppConfig.rocksDBShards.contains(cardKeyShard);
+
+            if (RulesConfig.cardSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardRightShard))) { // There are rules for the sliding windows of card subject
                 // parallel processing of card subjects with CompletableFutures. There are more than one CompletableFuture for card subject 
                 // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
                 for (Map<Long, List<RuleDefinition>> ruleMapForCard : RulesConfig.rulesMapArrayForCardSubject) {
@@ -886,7 +890,7 @@ public class FraudProcessor {
                 }
             }
 
-            if (RulesConfig.cardSubjectFixedWindowPresent) { // There are rules for the fixed windows of card subject
+            if (RulesConfig.cardSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardRightShard))) { // There are rules for the fixed windows of card subject
                 // Just one CompletableFuture for card subject fixed windows because most of the time there are sliding windows for card subject
                 CompletableFuture<TrxOrAlertEvent> cardProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
@@ -903,7 +907,10 @@ public class FraudProcessor {
                 cardProcessingFutures.add(cardProcessingFixedWindow);
             }
 
-            if (RulesConfig.merchantSubjectPresent) { // There are rules for the sliding windows of merchant subject         
+            int merchantKeyShard = Function.calculateShardId(merchantKey, AppConfig.rocksDBDiskShardCount);
+            Boolean isRightShardMerchant = AppConfig.rocksDBShards.contains(merchantKeyShard);
+
+            if (RulesConfig.merchantSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardMerchant))) { // There are rules for the sliding windows of merchant subject         
                 // parallel processing of merchant subjects with CompletableFutures. There are more than one CompletableFuture for merchant subject 
                 // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
                 for (Map<Long, List<RuleDefinition>> ruleMapForMerchant : RulesConfig.rulesMapArrayForMerchantSubject) {
@@ -923,7 +930,7 @@ public class FraudProcessor {
                 }
             }
 
-            if (RulesConfig.merchantSubjectFixedWindowPresent) { // There are rules for the fixed windows of merchant subject
+            if (RulesConfig.merchantSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardMerchant))) { // There are rules for the fixed windows of merchant subject
                 CompletableFuture<TrxOrAlertEvent> merchantProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
                         return keyProcessor.executeWithLock(merchantKey, (key) -> {
@@ -944,20 +951,26 @@ public class FraudProcessor {
                 for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
                     String keySpec = customSubject;
                     String keyValue = event.getTransaction().getKey(keySpec);
-                    String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
-                    CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
-                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
-                                return customEvent;
-                            });
-                        } catch (Exception e) {
-                            logger.error("Error processing custom subject key: {}", customSubjectKey, e);
-                            Thread.currentThread().interrupt();
-                            return null;
-                        }
-                    }, executor);
-                    customProcessingFutures.add(customProcessing);
+                    String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
+
+                    int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
+                    Boolean isRightShardCustom = AppConfig.rocksDBShards.contains(customKeyShard);
+
+                    if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardCustom)) { // There are rules for the sliding windows of custom subject
+                        CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
+                            try {
+                                return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
+                                    TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
+                                    return customEvent;
+                                });
+                            } catch (Exception e) {
+                                logger.error("Error processing custom subject key: {}", customSubjectKey, e);
+                                Thread.currentThread().interrupt();
+                                return null;
+                            }
+                        }, executor);
+                        customProcessingFutures.add(customProcessing);
+                    }
                 }
             }
 
@@ -966,20 +979,26 @@ public class FraudProcessor {
                 for (String customSubject : RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet()) {
                     String keySpec = customSubject;
                     String keyValue = event.getTransaction().getKey(keySpec);
-                    String customSubjectKey = CUSTOM_KEY_PREFIX + keyValue;
-                    CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
-                                TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true);
-                                return customEvent;
-                            });
-                        } catch (Exception e) {
-                            logger.error("Error processing custom subject key: {}", customSubjectKey, e);
-                            Thread.currentThread().interrupt();
-                            return null;
-                        }
-                    }, executor);
-                    customProcessingFutures.add(customProcessingFixedWindow);
+                    String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
+
+                    int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
+                    Boolean isRightShardCustom = AppConfig.rocksDBShards.contains(customKeyShard);
+
+                    if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardCustom)) { // There are rules for the fixed windows of custom subject
+                        CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
+                            try {
+                                return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
+                                    TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true);
+                                    return customEvent;
+                                });
+                            } catch (Exception e) {
+                                logger.error("Error processing custom subject key: {}", customSubjectKey, e);
+                                Thread.currentThread().interrupt();
+                                return null;
+                            }
+                        }, executor);
+                        customProcessingFutures.add(customProcessingFixedWindow);
+                    }
                 }
             }
 

@@ -10,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 
 public class NatsService {
@@ -28,9 +27,7 @@ public class NatsService {
     private Dispatcher dispatcher;
     private Dispatcher queryDispatcher;
 
-    public NatsService(Connection nc, ExecutorService executor,
-            FraudProcessor fraudProcessor, QueryProcessor queryProcessor, RocksDBService rocksDBService,
-            Properties props) {
+    public NatsService(Connection nc, ExecutorService executor, FraudProcessor fraudProcessor, QueryProcessor queryProcessor, RocksDBService rocksDBService) {
         this.nc = nc;
         this.executor = executor;
         this.fraudProcessor = fraudProcessor;
@@ -74,7 +71,7 @@ public class NatsService {
             for (Integer shardId : AppConfig.rocksDBShards) {
                 String shardTopic = "fraud.check." + shardId;
                 dispatcher.subscribe(shardTopic, "fraudmanager-group");
-                logger.info("Subscribed to shard topic: {}", shardTopic);
+                logger.info("{} subscribed to shard topic: {}", AppConfig.rocksdbNodeName, shardTopic);
             }
         }
 

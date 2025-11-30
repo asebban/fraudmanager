@@ -5,6 +5,8 @@ import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.util.RetryUtil;
+import ma.s2m.functions.Function;
+
 import org.apache.fury.Fury;
 import org.apache.fury.ThreadSafeFury;
 import org.apache.fury.config.Language;
@@ -15,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -100,8 +103,13 @@ public class RocksDBService {
                     .setIncreaseParallelism(Runtime.getRuntime().availableProcessors());
             
             for (int shardId : assignedShards) {
-                String shardPath = dbPath + "/shard-" + shardId;
+                String shardPath = dbPath + File.separator + "shard-" + shardId;
                 logger.info("Node: {}: Opening RocksDB shard {} at {}", AppConfig.rocksdbNodeName, shardId, shardPath);
+                
+                File shardDir = new File(shardPath);
+                if (!shardDir.exists() && !shardDir.mkdirs()) {
+                    throw new RuntimeException("Failed to create directory for RocksDB shard: " + shardPath);
+                }
                 
                 List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
                 RocksDB db = RocksDB.open(dbOptions, shardPath, cfDescriptors, cfHandles);
@@ -134,12 +142,7 @@ public class RocksDBService {
     // -----------------------------------------------------------------
     // SHARD ROUTING
     // -----------------------------------------------------------------
-    
-    /** Calculate which shard should handle this key using consistent hashing */
-    private int calculateShardId(String key) {
-        return Math.abs(key.hashCode()) % totalDiskShards;
-    }
-    
+        
     /** Helper to pick the correct column family based on the key prefix for a specific shard */
     private ColumnFamilyHandle getCFHandleForKey(int shardId, String key) {
         // Expected key format: subject[:custom]:key:windowSize
@@ -167,7 +170,7 @@ public class RocksDBService {
     public Map<Long, Measurment> getMeasurments(String key) {
         return RetryUtil.retry(() -> {
             try {
-                int shardId = calculateShardId(key);
+                int shardId = Function.calculateShardId(key, totalDiskShards);
                 RocksDB db = shardedDbs.get(shardId);
                 if (db == null) {
                     logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -189,7 +192,7 @@ public class RocksDBService {
 
     public Measurment getMeasurmentByKey(String key) {
         try {
-            int shardId = calculateShardId(key);
+            int shardId = Function.calculateShardId(key, totalDiskShards);
             RocksDB db = shardedDbs.get(shardId);
             if (db == null) {
                 logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -208,7 +211,7 @@ public class RocksDBService {
 
     public WrapperMeasurment getWrapperMeasurmentByKey(String key) {
         try {
-            int shardId = calculateShardId(key);
+            int shardId = Function.calculateShardId(key, totalDiskShards);
             RocksDB db = shardedDbs.get(shardId);
             if (db == null) {
                 logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -230,7 +233,7 @@ public class RocksDBService {
     // -----------------------------------------------------------------
     public void setMeasurments(String key, Map<Long, Measurment> measurments) {
         RetryUtil.retry(() -> {
-            int shardId = calculateShardId(key);
+            int shardId = Function.calculateShardId(key, totalDiskShards);
             AsyncRocksDbWriter writer = shardWriters.get(shardId);
             if (writer == null) {
                 logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -249,7 +252,7 @@ public class RocksDBService {
     public void setMeasurmentByKey(String key, Measurment measurment) {
         long start = System.currentTimeMillis();
         RetryUtil.retry(() -> {
-            int shardId = calculateShardId(key);
+            int shardId = Function.calculateShardId(key, totalDiskShards);
             AsyncRocksDbWriter writer = shardWriters.get(shardId);
             if (writer == null) {
                 logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -270,7 +273,7 @@ public class RocksDBService {
     public void setWrapperMeasurmentByKey(String key, WrapperMeasurment wrapperMeasurment) {
         long start = System.currentTimeMillis();
         RetryUtil.retry(() -> {
-            int shardId = calculateShardId(key);
+            int shardId = Function.calculateShardId(key, totalDiskShards);
             AsyncRocksDbWriter writer = shardWriters.get(shardId);
             if (writer == null) {
                 logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -299,7 +302,7 @@ public class RocksDBService {
     // -----------------------------------------------------------------
     public void deleteKey(String key) {
         RetryUtil.retry(() -> {
-            int shardId = calculateShardId(key);
+            int shardId = Function.calculateShardId(key, totalDiskShards);
             AsyncRocksDbWriter writer = shardWriters.get(shardId);
             if (writer == null) {
                 logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
@@ -341,7 +344,7 @@ public class RocksDBService {
                     return keys;
                 } else {
                     // Exact match - calculate shard
-                    int shardId = calculateShardId(pattern);
+                    int shardId = Function.calculateShardId(pattern, totalDiskShards);
                     RocksDB db = shardedDbs.get(shardId);
                     if (db == null) return List.of();
                     byte[] v = db.get(toBytes(pattern));
