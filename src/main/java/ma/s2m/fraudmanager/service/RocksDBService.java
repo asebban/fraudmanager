@@ -1,10 +1,15 @@
 package ma.s2m.fraudmanager.service;
 
 import ma.medtech.droolbuilder.rules.Subject;
+import ma.s2m.auth.impl.VRTransactionSummary;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.model.Measurment;
+import ma.s2m.fraudmanager.model.MeasurmentRecord;
+import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.util.RetryUtil;
+import ma.s2m.fraudmanager.model.TrxEntry;
+import ma.s2m.fraudmanager.model.RecordsDelta;
 import ma.s2m.functions.Function;
 
 import org.apache.fury.Fury;
@@ -137,6 +142,22 @@ public class RocksDBService {
                 .withLanguage(Language.JAVA)
                 .requireClassRegistration(false)
                 .buildThreadSafeFury();
+        
+        // Register frequently serialized classes to optimize memory usage
+        readFury.register(Measurment.class);
+        readFury.register(RecordHashMap.class);
+        readFury.register(MeasurmentRecord.class);
+        readFury.register(WrapperMeasurment.class);
+        readFury.register(TrxEntry.class);
+        readFury.register(RecordsDelta.class);
+        readFury.register(VRTransactionSummary.class);
+        readFury.register(ma.s2m.auth.AlertSet.class);
+        readFury.register(ma.s2m.auth.Alert.class);
+        readFury.register(Map.class);
+        readFury.register(List.class);
+        readFury.register(Boolean.class);
+        readFury.register(String.class);
+        readFury.register(Long.class);
     }
 
     // -----------------------------------------------------------------
@@ -434,9 +455,25 @@ public class RocksDBService {
         private final int shardCount;
         private final List<BlockingQueue<WriteRequest>> queues;
         private final List<Thread> workers;
-        private final ThreadLocal<Fury> threadLocalFury = ThreadLocal.withInitial(() ->
-                Fury.builder().withLanguage(Language.JAVA).requireClassRegistration(false).build()
-        );
+        private final ThreadLocal<Fury> threadLocalFury = ThreadLocal.withInitial(() -> {
+            Fury fury = Fury.builder().withLanguage(Language.JAVA).requireClassRegistration(false).build();
+            // Register frequently serialized classes to optimize memory usage
+            fury.register(Measurment.class);
+            fury.register(RecordHashMap.class);
+            fury.register(MeasurmentRecord.class);
+            fury.register(WrapperMeasurment.class);
+            fury.register(TrxEntry.class);
+            fury.register(RecordsDelta.class);
+            fury.register(VRTransactionSummary.class);
+            fury.register(ma.s2m.auth.AlertSet.class);
+            fury.register(ma.s2m.auth.Alert.class);
+            fury.register(Map.class);
+            fury.register(List.class);
+            fury.register(Boolean.class);
+            fury.register(String.class);
+            fury.register(Long.class);
+                return fury;
+            });
         @SuppressWarnings("resource")
         private final WriteOptions writeOptions = new WriteOptions().setSync(false);
         private volatile boolean running = true;

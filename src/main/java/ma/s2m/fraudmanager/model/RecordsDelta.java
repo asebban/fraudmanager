@@ -2,7 +2,6 @@ package ma.s2m.fraudmanager.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.io.Serializable;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -23,8 +22,7 @@ public class RecordsDelta implements Serializable {
     public void setAmountDelta(double amountDelta) { this.amountDelta = amountDelta; }
 
     public Map<String, Object> getValuesDelta() {
-        if (valuesDelta == null) valuesDelta = new HashMap<>();
-        return valuesDelta;
+        return valuesDelta != null ? valuesDelta : java.util.Collections.emptyMap();
     }
     public void setValuesDelta(Map<String, Object> valuesDelta) { this.valuesDelta = valuesDelta; }
 
