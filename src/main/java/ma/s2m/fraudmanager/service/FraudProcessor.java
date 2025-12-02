@@ -654,7 +654,7 @@ public class FraudProcessor {
         TrxEntry trxEntry = new TrxEntry();
         trxEntry.setTxNo(transaction.getTransactionNo());
         trxEntry.setTx(null);
-        trxEntry.setEventTimeMs(transaction.getTimestamp());
+        trxEntry.setEventTimeMs(transaction.getTimestamp() != null ? transaction.getTimestamp() : System.currentTimeMillis());
 
         Long beginCreateDelta = System.currentTimeMillis();
         trxEntry.setRecordDelta(createRecordsDelta(initialMeasurment, measurment));
@@ -828,6 +828,7 @@ public class FraudProcessor {
      * @param msg The message to process.
      */
     public void process(Message msg) {
+        long recv0 = System.currentTimeMillis();
         String topic = msg.getReplyTo();
         long arrivalTime = System.currentTimeMillis();
         String correlationId = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-correlation-id");
@@ -844,7 +845,6 @@ public class FraudProcessor {
             tx.setTopic(topic);
             tx.setDateTimeOfTrx(tx.getAutTranDateTimeF007());
 
-            long recv0 = System.currentTimeMillis();
             String sClientTs = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-client-publish-ts-ms");
             String sRecvTs = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-recv-ts-ms");
 
@@ -868,9 +868,9 @@ public class FraudProcessor {
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Pre-processing Time before starting the threads", (endArrivalTime - arrivalTime), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
             int cardKeyShard = Function.calculateShardId(cardKey, AppConfig.rocksDBDiskShardCount);
-            Boolean isCardRightShard = AppConfig.rocksDBShards.contains(cardKeyShard);
+            Boolean isCardKeyBelongingToMe = AppConfig.rocksDBShards.contains(cardKeyShard);
 
-            if (RulesConfig.cardSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardRightShard))) { // There are rules for the sliding windows of card subject
+            if (RulesConfig.cardSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardKeyBelongingToMe))) { // There are rules for the sliding windows of card subject
                 // parallel processing of card subjects with CompletableFutures. There are more than one CompletableFuture for card subject 
                 // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
                 for (Map<Long, List<RuleDefinition>> ruleMapForCard : RulesConfig.rulesMapArrayForCardSubject) {
@@ -890,7 +890,7 @@ public class FraudProcessor {
                 }
             }
 
-            if (RulesConfig.cardSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardRightShard))) { // There are rules for the fixed windows of card subject
+            if (RulesConfig.cardSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardKeyBelongingToMe))) { // There are rules for the fixed windows of card subject
                 // Just one CompletableFuture for card subject fixed windows because most of the time there are sliding windows for card subject
                 CompletableFuture<TrxOrAlertEvent> cardProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
@@ -908,9 +908,9 @@ public class FraudProcessor {
             }
 
             int merchantKeyShard = Function.calculateShardId(merchantKey, AppConfig.rocksDBDiskShardCount);
-            Boolean isRightShardMerchant = AppConfig.rocksDBShards.contains(merchantKeyShard);
+            Boolean isMerchantKeyBelongingToMe = AppConfig.rocksDBShards.contains(merchantKeyShard);
 
-            if (RulesConfig.merchantSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardMerchant))) { // There are rules for the sliding windows of merchant subject         
+            if (RulesConfig.merchantSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isMerchantKeyBelongingToMe))) { // There are rules for the sliding windows of merchant subject         
                 // parallel processing of merchant subjects with CompletableFutures. There are more than one CompletableFuture for merchant subject 
                 // if the rules number exceeds a certain threshold (app.processor.subject.parallelism.threshold)
                 for (Map<Long, List<RuleDefinition>> ruleMapForMerchant : RulesConfig.rulesMapArrayForMerchantSubject) {
@@ -930,7 +930,7 @@ public class FraudProcessor {
                 }
             }
 
-            if (RulesConfig.merchantSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardMerchant))) { // There are rules for the fixed windows of merchant subject
+            if (RulesConfig.merchantSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isMerchantKeyBelongingToMe))) { // There are rules for the fixed windows of merchant subject
                 CompletableFuture<TrxOrAlertEvent> merchantProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
                         return keyProcessor.executeWithLock(merchantKey, (key) -> {
@@ -954,9 +954,9 @@ public class FraudProcessor {
                     String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
 
                     int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
-                    Boolean isRightShardCustom = AppConfig.rocksDBShards.contains(customKeyShard);
+                    Boolean isCustomKeyBelongingToMe = AppConfig.rocksDBShards.contains(customKeyShard);
 
-                    if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardCustom)) { // There are rules for the sliding windows of custom subject
+                    if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCustomKeyBelongingToMe)) { // There are rules for the sliding windows of custom subject
                         CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
                             try {
                                 return keyProcessor.executeWithLock(customSubjectKey, (key) -> {

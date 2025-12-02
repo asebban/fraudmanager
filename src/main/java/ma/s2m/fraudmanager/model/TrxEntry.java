@@ -17,7 +17,7 @@ public class TrxEntry implements Serializable {
     public VRTransactionSummary getTx() { return tx; }
     public void setTx(VRTransactionSummary tx) { this.tx = tx; }
 
-    public Long getEventTimeMs() { return eventTimeMs; }
+    public Long getEventTimeMs() { return eventTimeMs != null ? eventTimeMs : System.currentTimeMillis(); }
     public void setEventTimeMs(Long eventTimeMs) { this.eventTimeMs = eventTimeMs; }
 
     public Map<String, RecordsDelta> getRecordDelta() { return recordDelta; }

@@ -92,7 +92,7 @@
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
-            <artifactId>commons</artifactId>
+            <artifactId>fraudmanager-commons</artifactId>
             <version>1.0-SNAPSHOT</version>
         </dependency>
         <dependency>

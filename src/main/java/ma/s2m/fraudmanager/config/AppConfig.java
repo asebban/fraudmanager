@@ -13,7 +13,6 @@ import io.nats.client.Nats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -52,11 +51,11 @@ public class AppConfig {
     public static List<Integer> rocksDBShards = new ArrayList<>();
     public static Boolean fraudManagerMultiNode = false;
 
-    public AppConfig(String[] args) throws IOException {
+    public AppConfig(String[] args) throws Exception {
 
-        IRepository localPropertyFile = new PropertiesRepository();
+        IRepository localPropertyFile = new PropertiesRepository("fraudmanager.properties");
         String repositoryClassName = localPropertyFile.getProperty("app.processor.repository.class", "ma.s2m.repository.PropertiesRepository");
-        IRepository centralRepository = (IRepository) Function.createDynamicClass(repositoryClassName);
+        IRepository centralRepository = (IRepository) Function.createDynamicClass(repositoryClassName, "fraudmanager.properties", args);
         centralRepository.load();
 
         natsHost = centralRepository.getProperty("nats.host", "localhost");

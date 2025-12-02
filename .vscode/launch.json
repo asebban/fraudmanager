@@ -6,7 +6,13 @@
       "name": "Main",
       "request": "launch",
       "mainClass": "ma.s2m.fraudmanager.Main",
-      "projectName": "fraudmanager"
+      "projectName": "fraudmanager",
+      "args": [
+        "--option",
+        "node.name=node-1",
+        "--option",
+        "rocksdb.node-1.shards=0-1"
+      ]
     },
     {
       "type": "java",

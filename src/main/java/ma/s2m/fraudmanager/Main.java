@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.StringJoiner;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,7 +34,11 @@ public class Main {
             init(); // Initialisation des règles avant de démarrer le service NATS
             natsService = config.natsService();
             natsService.startConsumer(); // Démarre le consumer NATS et les workers
-            logger.info("Application started. Listening for transactions...");
+            StringJoiner sj = new StringJoiner(", ");
+            for (Integer shard : AppConfig.rocksDBShards) {
+                sj.add(String.valueOf(shard));
+            }
+            logger.info("Node {} started owning shards {}. Listening for transactions...", AppConfig.rocksdbNodeName, sj.toString());
             // Blocage pour garder l'app en vie en permanence
             Thread.currentThread().join();
         } catch (Exception e) {
