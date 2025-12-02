@@ -76,11 +76,6 @@
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
-            <artifactId>auth</artifactId>
-            <version>2.7.0-RELEASE</version>
-        </dependency>
-        <dependency>
-            <groupId>ma.s2m</groupId>
             <artifactId>serializer</artifactId>
             <version>1.0.0-RELEASE</version>
         </dependency>
