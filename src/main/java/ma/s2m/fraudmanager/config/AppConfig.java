@@ -23,11 +23,12 @@ public class AppConfig {
     private static final String NATS_PROTOCOL = "nats://";
     public static String natsHost;
     public static int natsPort;
+    public static String natsTopic;
+    public static String natsAlertSetTopic;
     public static String redisHost;
     public static int redisPort;
     public static String redisUser;
     public static String redisPassword;
-    public static String natsTopic;
     public static String redisDatabase;
     public static int appThreadSessionPoolSize;
     public static String ruleDeploymentDir;
@@ -50,6 +51,7 @@ public class AppConfig {
     public static String rocksdbNodeName = "";
     public static List<Integer> rocksDBShards = new ArrayList<>();
     public static Boolean fraudManagerMultiNode = false;
+    public static Boolean fraudManagerAlertStoringEnabled = false;
 
     public AppConfig(String[] args) throws Exception {
 
@@ -61,6 +63,7 @@ public class AppConfig {
         natsHost = centralRepository.getProperty("nats.host", "localhost");
         natsPort = Integer.parseInt(centralRepository.getProperty("nats.port", "4222"));
         natsTopic = centralRepository.getProperty("nats.topic", "fraud.check");
+        natsAlertSetTopic = centralRepository.getProperty("nats.alertset.topic", "fraud.alert");
 
         redisHost = centralRepository.getProperty("redis.host", "localhost");
         redisPort = Integer.parseInt(centralRepository.getProperty("redis.port", "6379"));
@@ -80,7 +83,6 @@ public class AppConfig {
         repositoryWorkspaceDirectory = centralRepository.getProperty("drool.builder.repository.workspace.directory", "./workspace");
         rocksDBPath = centralRepository.getProperty("rocksdb.path", "./rocksdb");
         rocksDBQueueSize = Integer.parseInt(centralRepository.getProperty("rocksdb.queue.size", "10000"));
-        System.out.println("RocksDB Queue Size: " + rocksDBQueueSize);
         appProcessorSubjectParallelismThreshold = Integer.parseInt(centralRepository.getProperty("app.processor.subject.parallelism.threshold", "10"));
         waitTime = Long.parseLong(centralRepository.getProperty("wait.time", "300000"));
         natsQueryTopic = centralRepository.getProperty("nats.query.topic", "");
@@ -88,7 +90,8 @@ public class AppConfig {
         rocksDBSubmitTimeoutMs = Long.parseLong(centralRepository.getProperty("rocksdb.submit.timeout.ms", "100"));
         rocksDBDiskShardCount = Integer.parseInt(centralRepository.getProperty("rocksdb.disk.shard.count", "64"));
         rocksdbNodeName = centralRepository.getProperty("node.name", "node-0");
-        fraudManagerMultiNode = Boolean.parseBoolean(centralRepository.getProperty("fraud.manager.multi.node", "false"));
+        fraudManagerMultiNode = Boolean.parseBoolean(centralRepository.getProperty("fraudmanager.multinode", "false"));
+        fraudManagerAlertStoringEnabled = Boolean.parseBoolean(centralRepository.getProperty("fraudmanager.alertstoring.enabled", "false"));
 
         String shardsProp = centralRepository.getProperty("rocksdb." + rocksdbNodeName + ".shards", "0");
         if (shardsProp != null && !shardsProp.isEmpty()) {

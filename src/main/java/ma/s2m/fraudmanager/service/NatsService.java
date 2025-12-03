@@ -57,9 +57,7 @@ public class NatsService {
                     long endTime = System.currentTimeMillis();
                     String correlationId = msg.getHeaders() == null ? null
                             : msg.getHeaders().getFirst("x-correlation-id");
-                    logger.debug(
-                            "Time {} [{}] [{}] [Thread {}] Time taken to process the whole message from NATS receive to end of processing",
-                            (endTime - startTime), correlationId, msg.getSubject(), Thread.currentThread().getName());
+                    logger.debug("Time {} [{}] [{}] [Thread {}] Time taken to process the whole message from NATS receive to end of processing", (endTime - startTime), correlationId, msg.getSubject(), Thread.currentThread().getName());
                 } catch (Exception e) {
                     logger.error("Worker error while processing message", e);
                 }

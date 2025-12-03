@@ -1057,6 +1057,10 @@ public class FraudProcessor {
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Serialization Time", (afterSerialize - beforeSerialize), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
             natsConnection.publish(topic, responseBytes);
 
+            if (AppConfig.fraudManagerAlertStoringEnabled) {
+                storeAlertSet(combinedAlertSet);
+            }
+
         } catch (Exception e) {
             e.printStackTrace();
             logger.error("Error processing transaction", e);
@@ -1171,6 +1175,13 @@ public class FraudProcessor {
 
         processedEvent.setAlertSet(alertSet);
         return processedEvent;
+    }
+
+    public void storeAlertSet(AlertSet alertSet) throws Exception {
+        if (alertSet.hasAlerts()) {
+			byte[] alertSetData = SerializationManager.serialize(alertSet);
+			natsConnection.publish(AppConfig.natsAlertSetTopic, alertSetData);
+		}
     }
 
     /**
