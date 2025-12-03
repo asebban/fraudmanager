@@ -80,6 +80,7 @@ public class AppConfig {
         repositoryWorkspaceDirectory = centralRepository.getProperty("drool.builder.repository.workspace.directory", "./workspace");
         rocksDBPath = centralRepository.getProperty("rocksdb.path", "./rocksdb");
         rocksDBQueueSize = Integer.parseInt(centralRepository.getProperty("rocksdb.queue.size", "10000"));
+        System.out.println("RocksDB Queue Size: " + rocksDBQueueSize);
         appProcessorSubjectParallelismThreshold = Integer.parseInt(centralRepository.getProperty("app.processor.subject.parallelism.threshold", "10"));
         waitTime = Long.parseLong(centralRepository.getProperty("wait.time", "300000"));
         natsQueryTopic = centralRepository.getProperty("nats.query.topic", "");

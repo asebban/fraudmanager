@@ -79,12 +79,6 @@
             <artifactId>serializer</artifactId>
             <version>1.0.0-RELEASE</version>
         </dependency>
-        <!-- Apache Fury (Fastest Serializer) -->
-        <dependency>
-            <groupId>org.apache.fury</groupId>
-            <artifactId>fury-core</artifactId>
-            <version>0.9.0</version>
-        </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>fraudmanager-commons</artifactId>

@@ -77,7 +77,7 @@ public class FraudProcessor {
 
     @SuppressWarnings("unused")
     private DroolsSession createNewDroolsSession() {
-        HashMap<String, Object> globals = new HashMap<>();
+        HashMap<String, Object> globals = new HashMap<>(10);
         globals.put("timeConverter", new TimeConversion());
         globals.put("externalSystem", new ExternalSystem());
         globals.put("messageSender", messageSender);
@@ -110,7 +110,7 @@ public class FraudProcessor {
     }
 
     private DroolsSession createSessionForSubject(String subject) {
-        Map<String, Object> globals = new HashMap<>();
+        Map<String, Object> globals = new HashMap<>(10);
         globals.put("timeConverter", new TimeConversion());
         globals.put("externalSystem", new ExternalSystem());
         globals.put("messageSender", messageSender);
@@ -440,10 +440,12 @@ public class FraudProcessor {
      * @return A map of record deltas.
      */
     private Map<String, RecordsDelta> createRecordsDelta(Measurment initialMeasurment, Measurment finalMeasurment) {
-        Map<String, RecordsDelta> deltas = new HashMap<>();
         if (initialMeasurment == null || finalMeasurment == null) {
             throw new RuntimeException("Initial or final measurement for a transaction cannot be null");
         }
+
+        int expectedSize = finalMeasurment.getRecords().size();
+        Map<String, RecordsDelta> deltas = new HashMap<>(expectedSize);
 
         if (initialMeasurment.getRecords().isEmpty()) {
             for (Entry<String, MeasurmentRecord> entry : Collections
@@ -482,30 +484,33 @@ public class FraudProcessor {
                 deltas.get(recordKey).setAmountDelta(finalRecord.getAmount()
                         - (initialRecord.getAmount() == null ? 0.0 : initialRecord.getAmount()));
 
-                Map<String, Object> valuesDelta = new HashMap<>();
-                for (Entry<String, Object> valueEntry : finalRecord.getValues().entrySet()) {
-                    String attrKey = valueEntry.getKey();
-                    Object finalValue = valueEntry.getValue();
-                    Object initialValue = initialRecord.getValues().get(attrKey);
-                    if (finalValue instanceof Double) {
-                        Double deltaValue = (Double) finalValue
+                Map<String, Object> valuesDelta=null;
+                if (!finalRecord.getValues().isEmpty()) {
+                    valuesDelta = new HashMap<>(10);
+                    for (Entry<String, Object> valueEntry : finalRecord.getValues().entrySet()) {
+                        String attrKey = valueEntry.getKey();
+                        Object finalValue = valueEntry.getValue();
+                        Object initialValue = initialRecord.getValues().get(attrKey);
+                        if (finalValue instanceof Double) {
+                            Double deltaValue = (Double) finalValue
                                 - (initialValue != null && initialValue instanceof Double ? (Double) initialValue
                                         : 0.0);
-                        if (deltaValue != 0.0) {
-                            valuesDelta.put(attrKey, deltaValue);
-                        }
-                    } else if (finalValue instanceof Long) {
-                        Long deltaValue = (Long) finalValue
-                                - (initialValue != null && initialValue instanceof Long ? (Long) initialValue : 0L);
-                        if (deltaValue != 0L) {
-                            valuesDelta.put(attrKey, deltaValue);
-                        }
-                    } else if (finalValue instanceof Integer) {
-                        Integer deltaValue = (Integer) finalValue
-                                - (initialValue != null && initialValue instanceof Integer ? (Integer) initialValue
-                                        : 0);
-                        if (deltaValue != 0) {
-                            valuesDelta.put(attrKey, deltaValue);
+                            if (deltaValue != 0.0) {
+                                valuesDelta.put(attrKey, deltaValue);
+                            }
+                        } else if (finalValue instanceof Long) {
+                            Long deltaValue = (Long) finalValue
+                                    - (initialValue != null && initialValue instanceof Long ? (Long) initialValue : 0L);
+                            if (deltaValue != 0L) {
+                                valuesDelta.put(attrKey, deltaValue);
+                            }
+                        } else if (finalValue instanceof Integer) {
+                            Integer deltaValue = (Integer) finalValue
+                                    - (initialValue != null && initialValue instanceof Integer ? (Integer) initialValue
+                                            : 0);
+                            if (deltaValue != 0) {
+                                valuesDelta.put(attrKey, deltaValue);
+                            }
                         }
                     }
                 }
@@ -543,7 +548,6 @@ public class FraudProcessor {
      * @return A map of last deltas.
      */
     private Map<String, Object> createLastsDelta(Measurment initialMeasurment, Measurment finalMeasurment) {
-        Map<String, Object> deltas = new HashMap<>();
         if (initialMeasurment == null || finalMeasurment == null) {
             throw new RuntimeException("Initial or final measurement for a transaction cannot be null");
         }
@@ -551,6 +555,9 @@ public class FraudProcessor {
         if (initialMeasurment.getLasts().isEmpty()) {
             return new HashMap<>(finalMeasurment.getLasts());
         }
+
+        int expectedSize = Math.max(initialMeasurment.getLasts().size(), finalMeasurment.getLasts().size());
+        Map<String, Object> deltas = new HashMap<>(expectedSize);
 
         for (Entry<String, Object> entry : Collections.unmodifiableMap(finalMeasurment.getLasts()).entrySet()) {
             String lastKey = entry.getKey();

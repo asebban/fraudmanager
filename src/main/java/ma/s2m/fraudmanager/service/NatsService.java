@@ -50,6 +50,10 @@ public class NatsService {
                     long startTime = System.currentTimeMillis();
                     msg.getHeaders().put("x-recv-ts-ms", String.valueOf(startTime));
                     fraudProcessor.process(msg);
+                    
+                    // Flush accumulated writes to reduce serialization overhead
+                    rocksDBService.flushBatch();
+                    
                     long endTime = System.currentTimeMillis();
                     String correlationId = msg.getHeaders() == null ? null
                             : msg.getHeaders().getFirst("x-correlation-id");

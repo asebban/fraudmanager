@@ -1,20 +1,12 @@
 package ma.s2m.fraudmanager.service;
 
 import ma.medtech.droolbuilder.rules.Subject;
-import ma.s2m.auth.impl.VRTransactionSummary;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.model.Measurment;
-import ma.s2m.fraudmanager.model.MeasurmentRecord;
-import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.util.RetryUtil;
-import ma.s2m.fraudmanager.model.TrxEntry;
-import ma.s2m.fraudmanager.model.RecordsDelta;
 import ma.s2m.functions.Function;
 
-import org.apache.fury.Fury;
-import org.apache.fury.ThreadSafeFury;
-import org.apache.fury.config.Language;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * RocksDB service with asynchronous writes.
  * - Writes are delegated to a background writer thread.
- * - Objects are serialized inside the writer using {@link Fury}.
+ * - Objects are serialized inside the writer using {@link KryoSerializationService}.
  * - Uses a column family per subject (CARD, MERCHANT, CUSTOM) and a
  *   prefix‑rich key format: <subject>[:<custom>]:<key>:<windowSize>.
  */
@@ -58,8 +50,13 @@ public class RocksDBService {
     // Async writers per shard
     private final Map<Integer, AsyncRocksDbWriter> shardWriters;
 
-    // Thread‑safe Fury for reads
-    private final ThreadSafeFury readFury;
+    // ThreadLocal batch accumulator for reducing serialization overhead
+    private final ThreadLocal<Map<String, Measurment>> batchAccumulator = 
+        ThreadLocal.withInitial(HashMap::new);
+    
+    // ThreadLocal batch accumulator for WrapperMeasurment
+    private final ThreadLocal<Map<String, WrapperMeasurment>> wrapperBatchAccumulator = 
+        ThreadLocal.withInitial(HashMap::new);
 
     public RocksDBService(String dbPath, int queueSize) {
         // -----------------------------------------------------------------
@@ -134,30 +131,6 @@ public class RocksDBService {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open RocksDB shards", e);
         }
-
-        // -----------------------------------------------------------------
-        // Fury for synchronous reads
-        // -----------------------------------------------------------------
-        this.readFury = Fury.builder()
-                .withLanguage(Language.JAVA)
-                .requireClassRegistration(false)
-                .buildThreadSafeFury();
-        
-        // Register frequently serialized classes to optimize memory usage
-        readFury.register(Measurment.class);
-        readFury.register(RecordHashMap.class);
-        readFury.register(MeasurmentRecord.class);
-        readFury.register(WrapperMeasurment.class);
-        readFury.register(TrxEntry.class);
-        readFury.register(RecordsDelta.class);
-        readFury.register(VRTransactionSummary.class);
-        readFury.register(ma.s2m.auth.AlertSet.class);
-        readFury.register(ma.s2m.auth.Alert.class);
-        readFury.register(Map.class);
-        readFury.register(List.class);
-        readFury.register(Boolean.class);
-        readFury.register(String.class);
-        readFury.register(Long.class);
     }
 
     // -----------------------------------------------------------------
@@ -222,7 +195,7 @@ public class RocksDBService {
             ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
             if (v != null) {
-                return (Measurment) readFury.deserialize(v);
+                return KryoSerializationService.deserialize(v, Measurment.class);
             }
         } catch (Exception e) {
             logger.error("Error retrieving Measurment from RocksDB for key {}: {}", key, e.getMessage(), e);
@@ -241,7 +214,7 @@ public class RocksDBService {
             ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
             if (v != null) {
-                return (WrapperMeasurment) readFury.deserialize(v);
+                return KryoSerializationService.deserialize(v, WrapperMeasurment.class);
             }
         } catch (Exception e) {
             logger.error("Error retrieving WrapperMeasurment from RocksDB for key {}: {}", key, e.getMessage(), e);
@@ -271,52 +244,138 @@ public class RocksDBService {
     }
 
     public void setMeasurmentByKey(String key, Measurment measurment) {
-        long start = System.currentTimeMillis();
-        RetryUtil.retry(() -> {
-            int shardId = Function.calculateShardId(key, totalDiskShards);
-            AsyncRocksDbWriter writer = shardWriters.get(shardId);
-            if (writer == null) {
-                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
-                return;
-            }
-            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
-            boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), measurment);
-            if (!ok) {
-                logger.warn("Failed to persist measurment for key {} (queue full and fallback failed)", key);
-            } else {
-                logger.debug("Persisted measurment for key {}", key);
-            }
-        });
-        long end = System.currentTimeMillis();
-        logger.debug("Time {} ms : setMeasurmentByKey for key {}", (end - start), key);
+        // Accumulate in batch instead of saving immediately
+        batchAccumulator.get().put(key, measurment);
+        logger.debug("Accumulated measurment for key {} in batch", key);
     }
 
     public void setWrapperMeasurmentByKey(String key, WrapperMeasurment wrapperMeasurment) {
-        long start = System.currentTimeMillis();
-        RetryUtil.retry(() -> {
-            int shardId = Function.calculateShardId(key, totalDiskShards);
-            AsyncRocksDbWriter writer = shardWriters.get(shardId);
-            if (writer == null) {
-                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
-                return;
-            }
-            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
-            boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), wrapperMeasurment);
-            if (!ok) {
-                logger.warn("Failed to persist WrapperMeasurment for key {} (queue full and fallback failed)", key);
-            } else {
-                logger.debug("Persisted WrapperMeasurment for key {}", key);
-            }
-        });
-        long end = System.currentTimeMillis();
-        logger.debug("Time {} ms : setWrapperMeasurmentByKey for key {}", (end - start), key);
+        // Accumulate in batch instead of saving immediately
+        wrapperBatchAccumulator.get().put(key, wrapperMeasurment);
+        logger.debug("Accumulated wrapper measurment for key {} in batch", key);
     }
 
-    // -----------------------------------------------------------------
-    // Simple lock stubs (kept for compatibility)
-    // -----------------------------------------------------------------
-    public boolean acquireLock(String lockKey, String lockValue) { return true; }
-    public boolean releaseLock(String lockKey, String lockValue) { return true; }
+    /**
+     * Extracts the base key for sharding purposes (removes window size suffix).
+     * Ensures consistency with the router which routes based on Subject:Key.
+     */
+    private String getShardKey(String key) {
+        int lastSlash = key.lastIndexOf('/');
+        if (lastSlash != -1) {
+            return key.substring(0, lastSlash);
+        }
+        return key;
+    }
+
+    /**
+     * Flushes all accumulated writes in the current thread's batch.
+     * This dramatically reduces serialization overhead by batching multiple writes.
+     * Call this at the end of processing a NATS message.
+     */
+    public void flushBatch() {
+        Map<String, Measurment> batch = batchAccumulator.get();
+        Map<String, WrapperMeasurment> wrapperBatch = wrapperBatchAccumulator.get();
+        
+        if (batch.isEmpty() && wrapperBatch.isEmpty()) {
+            return;
+        }
+
+        long start = System.currentTimeMillis();
+        int submitted = 0;
+        int failed = 0;
+
+        // ===== Flush Measurment batch =====
+        if (!batch.isEmpty()) {
+            // Group by shard for efficiency
+            Map<Integer, List<Map.Entry<String, Measurment>>> byShard = new HashMap<>();
+            
+            for (Map.Entry<String, Measurment> entry : batch.entrySet()) {
+                // Use base key (without window size) for shard calculation
+                String shardKey = getShardKey(entry.getKey());
+                int shardId = Function.calculateShardId(shardKey, totalDiskShards);
+                byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
+            }
+
+            // Submit batch for each shard
+            for (Map.Entry<Integer, List<Map.Entry<String, Measurment>>> shardEntry : byShard.entrySet()) {
+                int shardId = shardEntry.getKey();
+                AsyncRocksDbWriter writer = shardWriters.get(shardId);
+                
+                if (writer == null) {
+                    logger.warn("Shard {} not assigned, skipping {} measurments (key sample: {})", 
+                               shardId, shardEntry.getValue().size(), shardEntry.getValue().get(0).getKey());
+                    failed += shardEntry.getValue().size();
+                    continue;
+                }
+
+                // Submit each measurment in the batch
+                for (Map.Entry<String, Measurment> entry : shardEntry.getValue()) {
+                    String key = entry.getKey();
+                    ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                    
+                    RetryUtil.retry(() -> {
+                        boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
+                        if (!ok) {
+                            logger.warn("Failed to persist measurment for key {} in batch", key);
+                        }
+                    });
+                    submitted++;
+                }
+            }
+
+            // Clear the batch for this thread
+            batch.clear();
+        }
+
+        // ===== Flush WrapperMeasurment batch =====
+        if (!wrapperBatch.isEmpty()) {
+            // Group by shard for efficiency
+            Map<Integer, List<Map.Entry<String, WrapperMeasurment>>> byShard = new HashMap<>();
+            
+            for (Map.Entry<String, WrapperMeasurment> entry : wrapperBatch.entrySet()) {
+                // Use base key (without window size) for shard calculation
+                String tmpKey = entry.getKey();
+                tmpKey = tmpKey.replace(FraudProcessor.FIXED_WINDOW_PREFIX, "");
+                String shardKey = getShardKey(tmpKey);
+                int shardId = Function.calculateShardId(shardKey, totalDiskShards);
+                byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
+            }
+
+            // Submit batch for each shard
+            for (Map.Entry<Integer, List<Map.Entry<String, WrapperMeasurment>>> shardEntry : byShard.entrySet()) {
+                int shardId = shardEntry.getKey();
+                AsyncRocksDbWriter writer = shardWriters.get(shardId);
+                
+                if (writer == null) {
+                    logger.warn("Shard {} not assigned, skipping {} wrapper measurments", 
+                               shardId, shardEntry.getValue().size());
+                    failed += shardEntry.getValue().size();
+                    continue;
+                }
+
+                // Submit each wrapper measurment in the batch
+                for (Map.Entry<String, WrapperMeasurment> entry : shardEntry.getValue()) {
+                    String key = entry.getKey();
+                    ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                    
+                    RetryUtil.retry(() -> {
+                        boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
+                        if (!ok) {
+                            logger.warn("Failed to persist wrapper measurment for key {} in batch", key);
+                        }
+                    });
+                    submitted++;
+                }
+            }
+
+            // Clear the wrapper batch for this thread
+            wrapperBatch.clear();
+        }
+
+        long end = System.currentTimeMillis();
+        logger.debug("Time {} ms : flushBatch {} keys ({} submitted, {} failed)", 
+                    (end - start), submitted + failed, submitted, failed);
+    }
 
     // -----------------------------------------------------------------
     // DELETE API (column‑family aware)
@@ -405,6 +464,11 @@ public class RocksDBService {
     }
 
     // -----------------------------------------------------------------
+    // Simple lock stubs (kept for compatibility)
+    // -----------------------------------------------------------------
+    public boolean acquireLock(String lockKey, String lockValue) { return true; }
+    public boolean releaseLock(String lockKey, String lockValue) { return true; }
+    // -----------------------------------------------------------------
     // Utility methods
     // -----------------------------------------------------------------
     private static byte[] toBytes(String s) { return s.getBytes(StandardCharsets.UTF_8); }
@@ -455,25 +519,6 @@ public class RocksDBService {
         private final int shardCount;
         private final List<BlockingQueue<WriteRequest>> queues;
         private final List<Thread> workers;
-        private final ThreadLocal<Fury> threadLocalFury = ThreadLocal.withInitial(() -> {
-            Fury fury = Fury.builder().withLanguage(Language.JAVA).requireClassRegistration(false).build();
-            // Register frequently serialized classes to optimize memory usage
-            fury.register(Measurment.class);
-            fury.register(RecordHashMap.class);
-            fury.register(MeasurmentRecord.class);
-            fury.register(WrapperMeasurment.class);
-            fury.register(TrxEntry.class);
-            fury.register(RecordsDelta.class);
-            fury.register(VRTransactionSummary.class);
-            fury.register(ma.s2m.auth.AlertSet.class);
-            fury.register(ma.s2m.auth.Alert.class);
-            fury.register(Map.class);
-            fury.register(List.class);
-            fury.register(Boolean.class);
-            fury.register(String.class);
-            fury.register(Long.class);
-                return fury;
-            });
         @SuppressWarnings("resource")
         private final WriteOptions writeOptions = new WriteOptions().setSync(false);
         private volatile boolean running = true;
@@ -520,7 +565,7 @@ public class RocksDBService {
             }
             // fallback direct write
             try (WriteBatch batch = new WriteBatch()) {
-                byte[] serialized = threadLocalFury.get().serialize(valueObj);
+                byte[] serialized = KryoSerializationService.serialize(valueObj);
                 batch.put(cf, key, serialized);
                 db.write(writeOptions, batch);
                 return true;
@@ -579,11 +624,11 @@ public class RocksDBService {
             switch (req.type) {
                 case PUT_BINARY -> batch.put(req.key, req.value);
                 case PUT_OBJECT -> {
-                    byte[] ser = threadLocalFury.get().serialize(req.objectValue);
+                    byte[] ser = KryoSerializationService.serialize(req.objectValue);
                     batch.put(req.key, ser);
                 }
                 case PUT_OBJECT_WITH_CF -> {
-                    byte[] ser = threadLocalFury.get().serialize(req.objectValue);
+                    byte[] ser = KryoSerializationService.serialize(req.objectValue);
                     batch.put(req.cfHandle, req.key, ser);
                 }
                 case DEL -> batch.delete(req.cfHandle, req.key);
