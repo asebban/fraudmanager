@@ -19,6 +19,7 @@ import ma.s2m.fraudmanager.drools.SessionMode;
 import ma.s2m.fraudmanager.helpers.TransactionDummyHelper;
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.MeasurmentRecord;
+import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.RecordsDelta;
 import ma.s2m.fraudmanager.model.TrxEntry;
 import ma.s2m.fraudmanager.model.TrxOrAlertEvent;
@@ -63,6 +64,7 @@ public class FraudProcessor {
     public static final String NO_ERROR_MESSAGE = "";
     public static final Integer FIXED_WINDOW = 1;
     public static final Integer SLIDING_WINDOW = 2;
+    public static final String GLOBAL_RECORD_KEY_SUFFIX = "GLOBAL"; 
 
     private static final Logger logger = LoggerFactory.getLogger(FraudProcessor.class);
     private final RocksDBService rocksDBService;
@@ -228,6 +230,7 @@ public class FraudProcessor {
         measurment.setCustomSubject(customSubject);
         measurment.setWindowSize(windowSize);
         measurment.setTrxEntries(new ArrayList<>());
+        measurment.setGlobalRecords(new RecordHashMap());
         return measurment;
     }
 
@@ -241,33 +244,13 @@ public class FraudProcessor {
     */
     private AlertSet newAlertSet(TrxOrAlertEvent event, String subject, String customSubject) {
         AlertSet alertSet = new AlertSet();
-        switch (subject) {
-            case Subject.CARD:
-                alertSet.setKey(event.getTransaction().getCardId());
-                break;
-            case Subject.MERCHANT:
-                alertSet.setKey(event.getTransaction().getMerchant());
-                break;
-            case Subject.CUSTOM:
-                VRTransactionSummary trx = event.getTransaction();
-                String key;
-                try {
-                    key = customSubject == null || customSubject.isEmpty() ? trx.getKey("cardId") : trx.getKey(customSubject);
-                } catch (IllegalArgumentException | NoSuchFieldException e) {
-                    e.printStackTrace();
-                    logger.error("Error getting key from transaction with Transaction No {} and customSubject '{}', setting an empty key", trx.getTransactionNo(), customSubject);
-                    key = "";
-                }
-                alertSet.setKey(key);
-                break;
-            default:
-                break;
-        }
-        alertSet.setSubject(subject);
-        alertSet.setCustomSubject(customSubject);
-        alertSet.setTopic(event.getTransaction().getTopic());
         alertSet.setAlertStatus(AlertSet.NO_ALERT);
+        alertSet.setKey(event.getKey());
+        alertSet.setCardId(event.getTransaction().getCardId());
+        alertSet.setMerchantId(event.getTransaction().getMerchant());
+        alertSet.setTopic(event.getTransaction().getTopic());
         alertSet.setTransactionNo(event.getTransaction().getTransactionNo());
+        alertSet.setScore(0.0);
         alertSet.setAlerts(new HashSet<>());
         return alertSet;
     }
@@ -279,29 +262,10 @@ public class FraudProcessor {
     * @param alertSet The alert set to copy
     * @return The new event
     */
-    private TrxOrAlertEvent buildEvent(TrxOrAlertEvent previousEvent, AlertSet alertSet) {
+    private TrxOrAlertEvent buildEvent(TrxOrAlertEvent inputEvent, AlertSet alertSet) {
 
-        if (previousEvent.getAlertSet() == null) {
-            previousEvent.setTimestamp(System.currentTimeMillis());
-            TrxOrAlertEvent event = new TrxOrAlertEvent(previousEvent);
-            alertSet.setTopic(previousEvent.getTransaction().getTopic());
-            event.setAlertSet(alertSet);
-            return event;
-        }
-
-        if (alertSet == null || alertSet.getAlerts() == null || alertSet.getAlerts().isEmpty()
-                || alertSet.getAlertStatus().equals(AlertSet.NO_ALERT)) {
-            // No new alertsets, return the previous one
-            previousEvent.setTimestamp(System.currentTimeMillis());
-            previousEvent.getAlertSet().setTopic(previousEvent.getTransaction().getTopic());
-            return new TrxOrAlertEvent(previousEvent);
-        }
-
-        TrxOrAlertEvent event = new TrxOrAlertEvent(previousEvent);
-
-        alertSet.getAlerts().forEach(a -> {
-            event.getAlertSet().getAlerts().add(a.copy());
-        });
+        TrxOrAlertEvent event = new TrxOrAlertEvent(inputEvent);
+        event.setAlertSet(alertSet);
 
         if (event.getAlertSet().hasAlerts()) {
             event.getAlertSet().setAlertStatus(AlertSet.ALERT);
@@ -310,9 +274,8 @@ public class FraudProcessor {
             event.getAlertSet().setAlertStatus(AlertSet.NO_ALERT);
             event.getAlertSet().setScore(0.0);
         }
-        event.setTimestamp(System.currentTimeMillis());
-        event.getAlertSet().setTopic(previousEvent.getTransaction().getTopic());
-        VRTransactionSummary trx = new VRTransactionSummary(previousEvent.getTransaction());
+
+        VRTransactionSummary trx = new VRTransactionSummary(inputEvent.getTransaction());
         event.setTransaction(trx);
         return event;
     }
@@ -621,11 +584,7 @@ public class FraudProcessor {
         Long cloneStart = System.currentTimeMillis();
         Measurment initialMeasurment = measurment.clone();
         Long cloneEnd = System.currentTimeMillis();
-        String subjectKey = measurment.getSubject();
-        if (Subject.CUSTOM.equals(measurment.getSubject())) {
-            subjectKey = measurment.getSubject() + KEY_SEPARATOR + measurment.getCustomSubject();
-        }
-        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, subjectKey, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
+        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
         // Set the current transaction in the measurment for drools processing
         measurment.setTransaction(transaction);
@@ -636,26 +595,23 @@ public class FraudProcessor {
 
             String extendedSubject = measurment.getSubject();
             if (extendedSubject.equalsIgnoreCase(Subject.CUSTOM)) {
-                extendedSubject = measurment.getSubject() + KEY_SEPARATOR + measurment.getCustomSubject();
+                extendedSubject = Subject.CUSTOM + KEY_SEPARATOR + measurment.getCustomSubject();
+            }
+
+            if (measurment.getGlobalRecords() == null) {
+                measurment.setGlobalRecords(new RecordHashMap());
             }
 
             executeSession(measurment, extendedSubject, correlationId);
             Long endExecute = System.currentTimeMillis();
-            subjectKey=measurment.getSubject();
-            if (Subject.CUSTOM.equals(measurment.getSubject())) {
-                subjectKey=measurment.getSubject()+KEY_SEPARATOR+measurment.getCustomSubject();
-            }
-
-            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration", (endExecute - beginExecute), correlationId, subjectKey, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
+            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration", (endExecute - beginExecute), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
 
         } catch (Exception e) {
             logger.error("Error inserting and executing transaction in session: {}", e.getMessage());
             e.printStackTrace();
         }
 
-        if (measurment.getAlertSet() != null && measurment.getAlertSet().hasAlerts()) {
-            logger.debug("[{}] [{}] win={} key={} trx={} ProcessFunction: Found {} alerts", correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo(), measurment.getAlertSet().getAlerts().size());
-        }
+        updateAlertSet(event, measurment);
 
         // add the transaction in the measurment (in the current window)
         TrxEntry trxEntry = new TrxEntry();
@@ -663,23 +619,33 @@ public class FraudProcessor {
         trxEntry.setTx(null);
         trxEntry.setEventTimeMs(transaction.getTimestamp() != null ? transaction.getTimestamp() : System.currentTimeMillis());
 
-        Long beginCreateDelta = System.currentTimeMillis();
         trxEntry.setRecordDelta(createRecordsDelta(initialMeasurment, measurment));
         trxEntry.setLastsDelta(createLastsDelta(initialMeasurment, measurment));
-        Long endCreateDelta = System.currentTimeMillis();
-
-        subjectKey = measurment.getSubject();
-        if (Subject.CUSTOM.equals(measurment.getSubject())) {
-            subjectKey=measurment.getSubject()+KEY_SEPARATOR+measurment.getCustomSubject();
-        }
-        logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Delta creation for trx {}", (endCreateDelta - beginCreateDelta), correlationId, subjectKey, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), trxEntry.getTxNo());
 
         // add the transaction with its delta to the measurment
         measurment.getTrxEntries().add(trxEntry);
-
-        // update the alert set
-        measurment.setAlertSet(completeAlertSet(measurment, event));
         return measurment;
+    }
+
+    private void updateAlertSet(TrxOrAlertEvent event, Measurment measurment) {
+        AlertSet alertSet = measurment.getAlertSet();
+        if (alertSet == null) {
+            alertSet = newAlertSet(event, measurment.getSubject(), measurment.getCustomSubject());
+            measurment.setAlertSet(alertSet);
+            return;
+        }
+
+        alertSet = event.getAlertSet().copy();
+        if (measurment.getAlertSet().hasAlerts()) {
+            for(Alert alert : measurment.getAlertSet().getAlerts()) {
+                alertSet.addAlert(alert.copy());
+                alertSet.setAlertStatus(AlertSet.ALERT);
+            }
+        } else {
+            alertSet.setAlertStatus(AlertSet.NO_ALERT);
+        }
+
+        measurment.setAlertSet(alertSet);
     }
 
     /**
@@ -691,7 +657,12 @@ public class FraudProcessor {
      * @param correlationId The correlation ID for logging.
      * @return The processed fixed window.
      */
+    @SuppressWarnings("null")
     private WrapperMeasurment processFixedWindow(WrapperMeasurment wm, TrxOrAlertEvent event, String correlationId) {
+
+        if (wm != null) {
+            throw new IllegalArgumentException("Wrapper measurement is null: should not be null");
+        }
 
         long now = System.currentTimeMillis();
 
@@ -701,7 +672,7 @@ public class FraudProcessor {
         }
 
         if (trx.getTimestamp() == null) {
-            trx.setTimestamp(now);
+            trx.setTimestamp(event.getTimestamp() != null ? event.getTimestamp() : now);
         }
 
         if (trx.getTimestamp() > wm.getWindowEndTime()) { // the fixed window expired
@@ -734,7 +705,7 @@ public class FraudProcessor {
 
         // Update the AlertSet
         wm.getMeasurment().setAlertSet(completeAlertSet(wm.getMeasurment(), event));
-        return wm;      
+        return wm;
     }
 
     /**
@@ -743,37 +714,25 @@ public class FraudProcessor {
      *
      * @param alertSet The alert set to complete.
      * @param event    The transaction or alert event.
-     * @param subject  The subject of the event.
      * @return The completed alert set.
      */
     private AlertSet completeAlertSet(Measurment measurment, TrxOrAlertEvent event) {
 
         if (measurment.getAlertSet() == null) {
-            logger.warn("AlertSet is null, should not happen");
-            return null;
+            return event.getAlertSet();
         }
-        measurment.getAlertSet().setTransactionNo(event.getTransaction().getTransactionNo());
 
-        AlertSet alertSet = measurment.getAlertSet();
-        alertSet.setTopic(event.getTransaction().getTopic());
-
-        if (alertSet.hasAlerts()) {
+        AlertSet alertSet = event.getAlertSet();
+        if (measurment.getAlertSet().hasAlerts()) {
             alertSet.setAlertStatus(AlertSet.ALERT);
+            if (alertSet.getAlerts() == null) {
+                alertSet.setAlerts(new HashSet<>());
+            }
+            for(Alert alert : measurment.getAlertSet().getAlerts()) {
+                alertSet.getAlerts().add(alert);
+            }
         } else {
             alertSet.setAlertStatus(AlertSet.NO_ALERT);
-        }
-
-        switch (measurment.getSubject()) {
-            case Subject.CARD:
-                alertSet.setKey(event.getTransaction().getCardId());
-                break;
-            case Subject.MERCHANT:
-                alertSet.setKey(event.getTransaction().getMerchant());
-                break;
-            case Subject.CUSTOM:
-                alertSet.setKey(event.getAlertSet().getKey());
-            default:
-                break;
         }
 
         return alertSet;
@@ -783,49 +742,28 @@ public class FraudProcessor {
      * Merges two alert sets into one, combining their alerts and updating the
      * status and score.
      *
-     * @param originalAlertSet The original alert set.
-     * @param newAlertSet      The new alert set to merge.
+     * @param baseAlertSet The original alert set.
+     * @param incomingAlertSet      The new alert set to merge.
      * @return The merged alert set.
      */
-    private AlertSet mergeAlertSets(AlertSet originalAlertSet, AlertSet newAlertSet) {
-        if (originalAlertSet == null || !originalAlertSet.hasAlerts()) {
-            if (newAlertSet != null) {
-                newAlertSet.calculateScore(RulesConfig.alertRulesCount);
-            }
-            return newAlertSet != null ? newAlertSet : new AlertSet();
-        }
-        if (newAlertSet == null || !newAlertSet.hasAlerts()) {
-            if (originalAlertSet != null) {
-                originalAlertSet.calculateScore(RulesConfig.alertRulesCount);
-            }
-            return originalAlertSet;
+    private AlertSet mergeAlertSets(AlertSet baseAlertSet, AlertSet incomingAlertSet) {
+
+        if (incomingAlertSet == null || !incomingAlertSet.hasAlerts()) {
+            return baseAlertSet;
         }
 
-        if (!originalAlertSet.hasAlerts()) {
-            originalAlertSet.setAlerts(newAlertSet.getAlerts());
-            originalAlertSet.setAlertStatus(newAlertSet.getAlertStatus());
-            originalAlertSet.setScore(newAlertSet.getScore());
-            return originalAlertSet;
+        if (baseAlertSet.getAlerts() == null) {
+            baseAlertSet.setAlerts(new HashSet<>());
         }
 
-        if (!newAlertSet.hasAlerts()) {
-            originalAlertSet.calculateScore(RulesConfig.alertRulesCount);
-            return originalAlertSet;
+        for(Alert a : incomingAlertSet.getAlerts()) {
+            baseAlertSet.getAlerts().add(a.copy());
         }
 
-        for (Alert alert : newAlertSet.getAlerts()) {
-            originalAlertSet.getAlerts().add(alert);
-        }
+        baseAlertSet.setAlertStatus(AlertSet.ALERT);
+        baseAlertSet.calculateScore(RulesConfig.alertRulesCount);
 
-        if (!originalAlertSet.hasAlerts()) {
-            originalAlertSet.setAlertStatus(AlertSet.NO_ALERT);
-            originalAlertSet.setScore(0.0);
-        } else {
-            originalAlertSet.setAlertStatus(AlertSet.ALERT);
-            originalAlertSet.calculateScore(RulesConfig.alertRulesCount);
-        }
-
-        return originalAlertSet;
+        return baseAlertSet;
     }
 
     /**
@@ -863,8 +801,6 @@ public class FraudProcessor {
             String cardKey = CARD_KEY_PREFIX + tx.getCardId();
             String merchantKey = MERCHANT_KEY_PREFIX + tx.getMerchant();
 
-            // create the initial event
-            TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
 
             // parallel processing of subjects with CompletableFutures
             List<CompletableFuture<TrxOrAlertEvent>> cardProcessingFutures = new ArrayList<>();
@@ -883,6 +819,8 @@ public class FraudProcessor {
                 for (Map<Long, List<RuleDefinition>> ruleMapForCard : RulesConfig.rulesMapArrayForCardSubject) {
                     CompletableFuture<TrxOrAlertEvent> cardProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
+                            // create the input event
+                            TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
                             return keyProcessor.executeWithLock(cardKey, (key) -> {
                                 TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, ruleMapForCard, false);
                                 return cardEvent;
@@ -901,6 +839,8 @@ public class FraudProcessor {
                 // Just one CompletableFuture for card subject fixed windows because most of the time there are sliding windows for card subject
                 CompletableFuture<TrxOrAlertEvent> cardProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
+                        // create the input event
+                        TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
                         return keyProcessor.executeWithLock(cardKey, (key) -> {
                             TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, RulesConfig.rulesMapForCardSubjectFixedWindow, true);
                             return cardEvent;
@@ -923,6 +863,8 @@ public class FraudProcessor {
                 for (Map<Long, List<RuleDefinition>> ruleMapForMerchant : RulesConfig.rulesMapArrayForMerchantSubject) {
                     CompletableFuture<TrxOrAlertEvent> merchantProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
+                            // create the input event
+                            TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
                             return keyProcessor.executeWithLock(merchantKey, (key) -> {
                                 TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, ruleMapForMerchant, false);
                                 return merchantEvent;
@@ -940,6 +882,8 @@ public class FraudProcessor {
             if (RulesConfig.merchantSubjectFixedWindowPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isMerchantKeyBelongingToMe))) { // There are rules for the fixed windows of merchant subject
                 CompletableFuture<TrxOrAlertEvent> merchantProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
+                        // create the input event
+                        TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
                         return keyProcessor.executeWithLock(merchantKey, (key) -> {
                             TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, RulesConfig.rulesMapForMerchantSubjectFixedWindow, true);
                             return merchantEvent;
@@ -954,10 +898,11 @@ public class FraudProcessor {
             }
 
             if (RulesConfig.customSubjectPresent) { // There are rules for the sliding windows of custom subject
-                // Each custom subject will be run by a completable future  
+                // Each custom subject will be run by a completable future
+                // customSubject here does not include the "Custom:" prefix
                 for (String customSubject : RulesConfig.rulesMapForCustomSubject.keySet()) {
                     String keySpec = customSubject;
-                    String keyValue = event.getTransaction().getKey(keySpec);
+                    String keyValue = tx.getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
 
                     int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
@@ -966,7 +911,9 @@ public class FraudProcessor {
                     if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCustomKeyBelongingToMe)) { // There are rules for the sliding windows of custom subject
                         CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
                             try {
-                                return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
+                                // create the input event
+                                TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                                return keyProcessor.executeWithLock(customSubject + KEY_SEPARATOR + keyValue, (key) -> {
                                     TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
                                     return customEvent;
                                 });
@@ -985,7 +932,7 @@ public class FraudProcessor {
                 // Each custom subject fixed window will be run by a completable future
                 for (String customSubject : RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet()) {
                     String keySpec = customSubject;
-                    String keyValue = event.getTransaction().getKey(keySpec);
+                    String keyValue = tx.getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
 
                     int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
@@ -994,7 +941,9 @@ public class FraudProcessor {
                     if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardCustom)) { // There are rules for the fixed windows of custom subject
                         CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                             try {
-                                return keyProcessor.executeWithLock(customSubjectKey, (key) -> {
+                                // create the input event
+                                TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                                return keyProcessor.executeWithLock(customSubject + KEY_SEPARATOR + keyValue, (key) -> {
                                     TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true);
                                     return customEvent;
                                 });
@@ -1027,19 +976,26 @@ public class FraudProcessor {
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Duration of threads completion", endOfJoin - endArrivalTime, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
             // Récupérer les résultats
-            AlertSet combinedAlertSet = new AlertSet();
+            AlertSet combinedAlertSet = null;
 
             try {
                 for (CompletableFuture<TrxOrAlertEvent> future : futures) {
                     TrxOrAlertEvent e = future != null ? future.get() : null;
                     if (e != null) {
-                        combinedAlertSet = mergeAlertSets(combinedAlertSet, e.getAlertSet());
+                        if (combinedAlertSet == null) {
+                            combinedAlertSet = e.getAlertSet();
+                        } else {
+                            combinedAlertSet = mergeAlertSets(combinedAlertSet, e.getAlertSet());
+                        }
+                        
                     }
                 }
             } catch (Exception e) {
                 logger.warn("Error retrieving processing results", e);
             }
 
+            combinedAlertSet.setTransactionNo(tx.getTransactionNo());
+            
             Long resultAgregationEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [Thread {}] trx={} duration of results aggregation", (resultAgregationEnd - endOfJoin), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
@@ -1093,16 +1049,22 @@ public class FraudProcessor {
      */
     private TrxOrAlertEvent processEvent(TrxOrAlertEvent event, String key, Long arrivalTime, String correlationId, String subject, String customSubject, Map<Long, List<RuleDefinition>> ruleMap, Boolean fixedWindow) {
 
+        event.setKey(key);
+        event.setCorrelationId(correlationId);
         AlertSet alertSet = newAlertSet(event, subject, customSubject);
         TrxOrAlertEvent processedEvent = buildEvent(event, alertSet);
         String suffix = customSubject == null || customSubject.isEmpty() ? "" : customSubject + KEY_SEPARATOR;
         String eventKey = subject + KEY_SEPARATOR + suffix + key;
+        String globalRecordKey = eventKey + WINDOW_SEPARATOR + GLOBAL_RECORD_KEY_SUFFIX;
 
-        Map<Long, List<RuleDefinition>> processedRulesMap = subject.equals(Subject.CUSTOM) ? RulesConfig.rulesMapForCustomSubject.get(customSubject) : ruleMap;
+        RecordHashMap globalRecord = rocksDBService.getRecordHashMapByKey(globalRecordKey);
+        if (globalRecord == null) {
+            globalRecord = new RecordHashMap();
+        }
 
         if (!fixedWindow) {
 
-            for (Entry<Long, List<RuleDefinition>> entry : processedRulesMap.entrySet()) {
+            for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
 
                 Long ruleWindowSize = (Long) entry.getKey();
                 Long stateGetStart = System.currentTimeMillis();
@@ -1114,12 +1076,20 @@ public class FraudProcessor {
                     measurment = createNewMeasument(key, subject, customSubject, ruleWindowSize);
                 }
 
+                // Getting the global record from the database and setting it to the measurment 
+                // (because the measurment's life ends with the end of window lifecycle and the global record
+                // life is infinite)
+                measurment.setGlobalRecords(globalRecord);
+
                 Long beforeProcessWindowSize = System.currentTimeMillis();
                 measurment = processSlidingWindow(measurment, processedEvent, arrivalTime, correlationId);
                 Long afterProcessWindowSize = System.currentTimeMillis();
                 logger.debug("Time {} ms [{}] [{}] [Thread : {}] key={} trx={} processEvent: Duration of processSlidingWindow({})", (afterProcessWindowSize - beforeProcessWindowSize), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), key, processedEvent.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
 
+                globalRecord = measurment.getGlobalRecords();
+
                 alertSet = mergeAlertSets(alertSet, measurment.getAlertSet());
+
                 measurment.setAlertSet(null); // clear alert set to avoid duplication in next window
                 measurment.setTransaction(null); // clear transaction to avoid serialization issues
                 measurment.setGlobalRecords(null); // clear global records because they don't need to be stored with the timeramed measurment
@@ -1132,6 +1102,7 @@ public class FraudProcessor {
             for (Entry<Long, List<RuleDefinition>> entry : ruleMap.entrySet()) {
                 Long ruleWindowSize = (Long) entry.getKey();
                 String fwEventKey = subject + KEY_SEPARATOR + suffix + FIXED_WINDOW_PREFIX + key;
+                eventKey = subject + KEY_SEPARATOR + suffix + key;
                 Long beginProcessingWindow = System.currentTimeMillis();
 
                 // récupérer la mesure stockée pour cette clé depuis le ValueState
@@ -1152,9 +1123,14 @@ public class FraudProcessor {
                     wm = WrapperMeasurment.createNewWrapperMeasurment(createNewMeasument(key, subject, customSubject, ruleWindowSize), processedEvent.getTransaction().getTimestamp());
                 }
             
+                wm.getMeasurment().setGlobalRecords(globalRecord);
+
                 wm = processFixedWindow(wm, processedEvent, correlationId);
 
                 alertSet = mergeAlertSets(alertSet, wm.getMeasurment().getAlertSet());
+
+                globalRecord = wm.getMeasurment().getGlobalRecords();
+
                 wm.getMeasurment().setAlertSet(null); // clear alert set to avoid duplication in next window
                 wm.getMeasurment().setTransaction(null); // clear transaction to avoid serialization issues
                 wm.getMeasurment().setGlobalRecords(null); // clear global records to avoid serialization issues
@@ -1172,6 +1148,9 @@ public class FraudProcessor {
                 logger.debug("Time {} ms FixedWindows: [{}] [{}] [Trx {}] ProcessFunction: Time of processing fixed window {}", (endProcessingWindow - beginProcessingWindow), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), event.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
             }
         }
+
+        // update the global record in the database
+        this.rocksDBService.setRecordHashMapByKey(globalRecordKey, globalRecord);
 
         processedEvent.setAlertSet(alertSet);
         return processedEvent;
@@ -1193,7 +1172,7 @@ public class FraudProcessor {
             logger.info("Shutting down FraudProcessor executor...");
             executor.shutdown();
             try {
-                if (!executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                if (!executor.awaitTermination(20, java.util.concurrent.TimeUnit.SECONDS)) {
                     logger.warn("Executor did not terminate gracefully, forcing shutdown...");
                     executor.shutdownNow();
                 }

@@ -37,6 +37,10 @@ public class NatsService {
         this.queryTopic = AppConfig.natsQueryTopic;
     }
 
+    public RocksDBService getRocksDBService() {
+        return rocksDBService;
+    }
+
     /**
      * Starts the NATS consumer. Each incoming message is submitted to the
      * virtual‑thread executor
@@ -125,7 +129,7 @@ public class NatsService {
         // Release processor resources
         fraudProcessor.shutdown();
 
-        // Stop the executor
+        // Stop the executor if not done before
         executor.shutdownNow();
 
         try {

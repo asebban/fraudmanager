@@ -9,9 +9,9 @@
       "projectName": "fraudmanager",
       "args": [
         "--option",
-        "node.name=node-1",
+        "node.name=node-0",
         "--option",
-        "rocksdb.node-1.shards=0-1"
+        "rocksdb.node-0.shards=0"
       ]
     },
     {

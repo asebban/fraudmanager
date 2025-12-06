@@ -79,6 +79,8 @@ public class Measurment implements Cloneable, Serializable {
 		clone.setKey(this.getKey());
 		clone.setWindowSize(this.windowSize);
 		clone.setTransaction(this.transaction);
+		clone.setSubject(this.subject);
+		clone.setCustomSubject(this.customSubject);
 
 		// Perform a deep copy of the RecordHashMap
 		RecordHashMap clonedRecords = new RecordHashMap();
@@ -93,9 +95,24 @@ public class Measurment implements Cloneable, Serializable {
 		}
 		this.lasts = clonedLasts;
 
+		HashMap<String, Integer> clonedLastsCount = new HashMap<>();
+		for (Map.Entry<String, Integer> entry : this.lastsCount.entrySet()) {
+			clonedLastsCount.put(entry.getKey(), entry.getValue());
+		}
+		this.lastsCount = clonedLastsCount;
+
 		clone.setLastsCount(new HashMap<>(this.lastsCount));
 
-		clone.setAlertSet(this.alertSet);
+		if (alertSet != null) {
+			clone.setAlertSet(this.alertSet.copy());
+		}
+
+		if (this.trxEntries != null) {
+			for(TrxEntry trxEntry : this.trxEntries) {
+				clone.addTransaction(trxEntry.clone());
+			}
+		}
+
 		clone.setDirty(this.dirty);
 		return clone;
 	}

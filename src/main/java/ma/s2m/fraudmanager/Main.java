@@ -111,8 +111,7 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 RulesConfig.rulesMapForCardSubject.put(windowSize, ruleDefinitions);
-            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.MERCHANT)
-                    && !ruleDefinition.getFixedWindow()) {
+            } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.MERCHANT) && !ruleDefinition.getFixedWindow()) {
                 List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForMerchantSubject.get(windowSize);
                 if (ruleDefinitions == null) {
                     ruleDefinitions = new ArrayList<>();
@@ -123,9 +122,7 @@ public class Main {
                 RulesConfig.rulesMapForMerchantSubject.put(windowSize, ruleDefinitions);
             } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM) && !ruleDefinition.getFixedWindow()) {
                 String customSubject = ruleDefinition.getCustomSubject();
-                String customSubjectKey = customSubject;
-                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject
-                        .get(customSubjectKey);
+                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubject.get(customSubject);
                 if (customWindows == null) {
                     customWindows = new HashMap<>();
                 }
@@ -137,11 +134,10 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 customWindows.put(windowSize, ruleDefinitions);
-                RulesConfig.rulesMapForCustomSubject.put(customSubjectKey, customWindows);
+                RulesConfig.rulesMapForCustomSubject.put(customSubject, customWindows);
             } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CUSTOM) && ruleDefinition.getFixedWindow()) {
                 String customSubject = ruleDefinition.getCustomSubject();
-                String customSubjectKey = customSubject;
-                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubjectKey);
+                HashMap<Long, List<RuleDefinition>> customWindows = RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject);
                 if (customWindows == null) {
                     customWindows = new HashMap<>();
                 }
@@ -153,7 +149,7 @@ public class Main {
                     ruleDefinitions.add(ruleDefinition);
                 }
                 customWindows.put(windowSize, ruleDefinitions);
-                RulesConfig.rulesMapForCustomSubjectFixedWindow.put(customSubjectKey, customWindows);
+                RulesConfig.rulesMapForCustomSubjectFixedWindow.put(customSubject, customWindows);
             } else if (ruleDefinition.getSubject().equalsIgnoreCase(Subject.CARD) && ruleDefinition.getFixedWindow()) {
                 List<RuleDefinition> ruleDefinitions = RulesConfig.rulesMapForCardSubjectFixedWindow.get(windowSize);
                 if (ruleDefinitions == null) {
@@ -242,36 +238,47 @@ public class Main {
     private static void addShutdownHook() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                if (!AppConfig.appRocksDBCleanOnShutdown) {
+                if (natsService != null) {
+                    natsService.stop();
+                }
+
+                if (AppConfig.appRocksDBCleanOnShutdown) {
+                    logger.info("Intercepting shutdown signal. Cleaning up RocksDB keys...");
+                    if (natsService != null && natsService.getRocksDBService() != null) {
+                        RocksDBService rocksDBService = natsService.getRocksDBService();
+
+                        // Supprimer les clés commençant par "Card:"
+                        List<String> keys = rocksDBService.getKeysByPattern(FraudProcessor.CARD_KEY_PREFIX + "*");
+                        if (keys != null) {
+                            keys.forEach(rocksDBService::deleteKey);
+                        }
+                        // Supprimer les clés commençant par "Merchant:"
+                        keys = rocksDBService.getKeysByPattern(FraudProcessor.MERCHANT_KEY_PREFIX + "*");
+                        if (keys != null) {
+                            keys.forEach(rocksDBService::deleteKey);
+                        }
+                        // Supprimer les clés commençant par "Custom:"
+                        keys = rocksDBService.getKeysByPattern(FraudProcessor.CUSTOM_KEY_PREFIX + "*");
+                        if (keys != null) {
+                            keys.forEach(rocksDBService::deleteKey);
+                        }
+                        // Supprimer les clés commençant par "lock:"
+                        keys = rocksDBService.getKeysByPattern(FraudProcessor.LOCK_KEY_PREFIX + "*");
+                        if (keys != null) {
+                            keys.forEach(rocksDBService::deleteKey);
+                        }
+                        logger.info("RocksDB cleanup completed.");
+                    } else {
+                        logger.warn("RocksDBService not available for cleanup.");
+                    }
+                } else {
                     logger.info("RocksDB cleanup on shutdown is disabled. Skipping cleanup.");
-                    return;
                 }
-                logger.info("Intercepting shutdown signal. Cleaning up RocksDB keys...");
-                AppConfig config = new AppConfig(new String[0]);
-                RocksDBService rocksDBService = config.rocksDBService(AppConfig.rocksDBPath,
-                        AppConfig.rocksDBQueueSize);
-                // Supprimer les clés commençant par "Card:"
-                List<String> keys = rocksDBService.getKeysByPattern(FraudProcessor.CARD_KEY_PREFIX + "*");
-                if (keys != null) {
-                    keys.forEach(rocksDBService::deleteKey);
+
+                if (natsService != null && natsService.getRocksDBService() != null) {
+                    natsService.getRocksDBService().close();
                 }
-                // Supprimer les clés commençant par "Merchant:"
-                keys = rocksDBService.getKeysByPattern(FraudProcessor.MERCHANT_KEY_PREFIX + "*");
-                if (keys != null) {
-                    keys.forEach(rocksDBService::deleteKey);
-                }
-                // Supprimer les clés commençant par "Custom:"
-                keys = rocksDBService.getKeysByPattern(FraudProcessor.CUSTOM_KEY_PREFIX + "*");
-                if (keys != null) {
-                    keys.forEach(rocksDBService::deleteKey);
-                }
-                // Supprimer les clés commençant par "lock:"
-                keys = rocksDBService.getKeysByPattern(FraudProcessor.LOCK_KEY_PREFIX + "*");
-                if (keys != null) {
-                    keys.forEach(rocksDBService::deleteKey);
-                }
-                logger.info("RocksDB cleanup completed.");
-                natsService.stop();
+
             } catch (Exception e) {
                 logger.error("Error during RocksDB cleanup on shutdown", e);
             }

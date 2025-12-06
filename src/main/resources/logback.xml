@@ -33,9 +33,9 @@
     </appender>
 
     <!-- Logger levels for project packages -->
-    <!--<logger name="ma.s2m.fraudmanager" level="DEBUG" additivity="false">
+    <logger name="ma.s2m.fraudmanager" level="DEBUG" additivity="false">
         <appender-ref ref="FILE"/>
-    </logger>-->
+    </logger>
 
     <!-- Reduce noise from libraries (tweak as needed) -->
     <!--logger name="io.lettuce" level="WARN"/>
@@ -43,7 +43,7 @@
     <logger name="org.eclipse.jetty" level="WARN"/-->
 
     <!-- Root logger -->
-    <root level="${LOG_LEVEL}">
+    <!--root level="${LOG_LEVEL}">
         <appender-ref ref="STDOUT"/>
-    </root>
+    </root>-->
 </configuration>

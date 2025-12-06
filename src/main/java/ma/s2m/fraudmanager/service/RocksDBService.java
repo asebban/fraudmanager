@@ -3,6 +3,7 @@ package ma.s2m.fraudmanager.service;
 import ma.medtech.droolbuilder.rules.Subject;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.model.Measurment;
+import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.util.RetryUtil;
 import ma.s2m.functions.Function;
@@ -19,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -50,13 +52,14 @@ public class RocksDBService {
     // Async writers per shard
     private final Map<Integer, AsyncRocksDbWriter> shardWriters;
 
-    // ThreadLocal batch accumulator for reducing serialization overhead
-    private final ThreadLocal<Map<String, Measurment>> batchAccumulator = 
-        ThreadLocal.withInitial(HashMap::new);
+    // Shared batch accumulator for reducing serialization overhead
+    private final Map<String, Measurment> batchAccumulator = new ConcurrentHashMap<>();
     
-    // ThreadLocal batch accumulator for WrapperMeasurment
-    private final ThreadLocal<Map<String, WrapperMeasurment>> wrapperBatchAccumulator = 
-        ThreadLocal.withInitial(HashMap::new);
+    // Shared batch accumulator for reducing serialization overhead
+    private final Map<String, RecordHashMap> recordHashMapBatchAccumulator = new ConcurrentHashMap<>();
+
+    // Shared batch accumulator for WrapperMeasurment
+    private final Map<String, WrapperMeasurment> wrapperBatchAccumulator = new ConcurrentHashMap<>();
 
     public RocksDBService(String dbPath, int queueSize) {
         // -----------------------------------------------------------------
@@ -184,6 +187,28 @@ public class RocksDBService {
         });
     }
 
+    /*
+     * Get a RecordHashMap from RocksDB by key
+     */
+    public RecordHashMap getRecordHashMapByKey(String key) {
+        try {
+            int shardId = Function.calculateShardId(key, totalDiskShards);
+            RocksDB db = shardedDbs.get(shardId);
+            if (db == null) {
+                logger.warn("Shard {} is not assigned to this node, key: {}", shardId, key);
+                return null;
+            }
+            ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+            byte[] v = db.get(cf, toBytes(key));
+            if (v != null) {
+                return KryoSerializationService.deserialize(v, RecordHashMap.class);
+            }
+        } catch (Exception e) {
+            logger.error("Error retrieving RecordHashMap from RocksDB for key {}: {}", key, e.getMessage(), e);
+        }
+        return null;
+    }
+
     public Measurment getMeasurmentByKey(String key) {
         try {
             int shardId = Function.calculateShardId(key, totalDiskShards);
@@ -243,15 +268,21 @@ public class RocksDBService {
         });
     }
 
+    public void setRecordHashMapByKey(String key, RecordHashMap recordHashMap) {
+        // Accumulate in shared batch instead of saving immediately
+        recordHashMapBatchAccumulator.put(key, recordHashMap);
+        logger.debug("Accumulated recordHashMap for key {} in batch", key);
+    }
+
     public void setMeasurmentByKey(String key, Measurment measurment) {
-        // Accumulate in batch instead of saving immediately
-        batchAccumulator.get().put(key, measurment);
+        // Accumulate in shared batch instead of saving immediately
+        batchAccumulator.put(key, measurment);
         logger.debug("Accumulated measurment for key {} in batch", key);
     }
 
     public void setWrapperMeasurmentByKey(String key, WrapperMeasurment wrapperMeasurment) {
-        // Accumulate in batch instead of saving immediately
-        wrapperBatchAccumulator.get().put(key, wrapperMeasurment);
+        // Accumulate in shared batch instead of saving immediately
+        wrapperBatchAccumulator.put(key, wrapperMeasurment);
         logger.debug("Accumulated wrapper measurment for key {} in batch", key);
     }
 
@@ -268,15 +299,12 @@ public class RocksDBService {
     }
 
     /**
-     * Flushes all accumulated writes in the current thread's batch.
-     * This dramatically reduces serialization overhead by batching multiple writes.
+     * Flushes all accumulated writes in the shared batch.
+     * This is thread-safe and ensures all accumulated writes from all threads are persisted.
      * Call this at the end of processing a NATS message.
      */
     public void flushBatch() {
-        Map<String, Measurment> batch = batchAccumulator.get();
-        Map<String, WrapperMeasurment> wrapperBatch = wrapperBatchAccumulator.get();
-        
-        if (batch.isEmpty() && wrapperBatch.isEmpty()) {
+        if (batchAccumulator.isEmpty() && wrapperBatchAccumulator.isEmpty() && recordHashMapBatchAccumulator.isEmpty()) {
             return;
         }
 
@@ -285,91 +313,160 @@ public class RocksDBService {
         int failed = 0;
 
         // ===== Flush Measurment batch =====
-        if (!batch.isEmpty()) {
-            // Group by shard for efficiency
-            Map<Integer, List<Map.Entry<String, Measurment>>> byShard = new HashMap<>();
-            
-            for (Map.Entry<String, Measurment> entry : batch.entrySet()) {
-                // Use base key (without window size) for shard calculation
-                String shardKey = getShardKey(entry.getKey());
-                int shardId = Function.calculateShardId(shardKey, totalDiskShards);
-                byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
+        if (!batchAccumulator.isEmpty()) {
+            // Drain the map to avoid concurrent modification issues and double flushing
+            // We iterate and remove keys one by one or copy the whole map
+            // Copying is safer for iteration
+            Map<String, Measurment> batchSnapshot = new HashMap<>();
+            Iterator<Map.Entry<String, Measurment>> it = batchAccumulator.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<String, Measurment> entry = it.next();
+                batchSnapshot.put(entry.getKey(), entry.getValue());
+                it.remove();
             }
 
-            // Submit batch for each shard
-            for (Map.Entry<Integer, List<Map.Entry<String, Measurment>>> shardEntry : byShard.entrySet()) {
-                int shardId = shardEntry.getKey();
-                AsyncRocksDbWriter writer = shardWriters.get(shardId);
+            if (!batchSnapshot.isEmpty()) {
+                // Group by shard for efficiency
+                Map<Integer, List<Map.Entry<String, Measurment>>> byShard = new HashMap<>();
                 
-                if (writer == null) {
-                    logger.warn("Shard {} not assigned, skipping {} measurments (key sample: {})", 
-                               shardId, shardEntry.getValue().size(), shardEntry.getValue().get(0).getKey());
-                    failed += shardEntry.getValue().size();
-                    continue;
+                for (Map.Entry<String, Measurment> entry : batchSnapshot.entrySet()) {
+                    // Use base key (without window size) for shard calculation
+                    String shardKey = getShardKey(entry.getKey());
+                    int shardId = Function.calculateShardId(shardKey, totalDiskShards);
+                    byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
                 }
 
-                // Submit each measurment in the batch
-                for (Map.Entry<String, Measurment> entry : shardEntry.getValue()) {
-                    String key = entry.getKey();
-                    ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                // Submit batch for each shard
+                for (Map.Entry<Integer, List<Map.Entry<String, Measurment>>> shardEntry : byShard.entrySet()) {
+                    int shardId = shardEntry.getKey();
+                    AsyncRocksDbWriter writer = shardWriters.get(shardId);
                     
-                    RetryUtil.retry(() -> {
-                        boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
-                        if (!ok) {
-                            logger.warn("Failed to persist measurment for key {} in batch", key);
-                        }
-                    });
-                    submitted++;
+                    if (writer == null) {
+                        logger.warn("Shard {} not assigned, skipping {} measurments (key sample: {})", 
+                                   shardId, shardEntry.getValue().size(), shardEntry.getValue().get(0).getKey());
+                        failed += shardEntry.getValue().size();
+                        continue;
+                    }
+
+                    // Submit each measurment in the batch
+                    for (Map.Entry<String, Measurment> entry : shardEntry.getValue()) {
+                        String key = entry.getKey();
+                        ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                        
+                        RetryUtil.retry(() -> {
+                            boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
+                            if (!ok) {
+                                logger.warn("Failed to persist measurment for key {} in batch", key);
+                            }
+                        });
+                        submitted++;
+                    }
                 }
             }
+        }
 
-            // Clear the batch for this thread
-            batch.clear();
+        // ===== Flush RecordHashMap batch =====
+        if (!recordHashMapBatchAccumulator.isEmpty()) {
+            // Drain the map
+            Map<String, RecordHashMap> recordBatchSnapshot = new HashMap<>();
+            Iterator<Map.Entry<String, RecordHashMap>> it = recordHashMapBatchAccumulator.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<String, RecordHashMap> entry = it.next();
+                recordBatchSnapshot.put(entry.getKey(), entry.getValue());
+                it.remove();
+            }
+
+            if (!recordBatchSnapshot.isEmpty()) {
+                // Group by shard for efficiency
+                Map<Integer, List<Map.Entry<String, RecordHashMap>>> byShard = new HashMap<>();
+                
+                for (Map.Entry<String, RecordHashMap> entry : recordBatchSnapshot.entrySet()) {
+                    // Use base key (without window size) for shard calculation
+                    String shardKey = getShardKey(entry.getKey());
+                    int shardId = Function.calculateShardId(shardKey, totalDiskShards);
+                    byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
+                }
+
+                // Submit batch for each shard
+                for (Map.Entry<Integer, List<Map.Entry<String, RecordHashMap>>> shardEntry : byShard.entrySet()) {
+                    int shardId = shardEntry.getKey();
+                    AsyncRocksDbWriter writer = shardWriters.get(shardId);
+                    
+                    if (writer == null) {
+                        logger.warn("Shard {} not assigned, skipping {} recordHashMaps", 
+                                   shardId, shardEntry.getValue().size());
+                        failed += shardEntry.getValue().size();
+                        continue;
+                    }
+
+                    // Submit each recordHashMap in the batch
+                    for (Map.Entry<String, RecordHashMap> entry : shardEntry.getValue()) {
+                        String key = entry.getKey();
+                        ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                        
+                        RetryUtil.retry(() -> {
+                            boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
+                            if (!ok) {
+                                logger.warn("Failed to persist recordHashMap for key {} in batch", key);
+                            }
+                        });
+                        submitted++;
+                    }
+                }
+            }
         }
 
         // ===== Flush WrapperMeasurment batch =====
-        if (!wrapperBatch.isEmpty()) {
-            // Group by shard for efficiency
-            Map<Integer, List<Map.Entry<String, WrapperMeasurment>>> byShard = new HashMap<>();
-            
-            for (Map.Entry<String, WrapperMeasurment> entry : wrapperBatch.entrySet()) {
-                // Use base key (without window size) for shard calculation
-                String tmpKey = entry.getKey();
-                tmpKey = tmpKey.replace(FraudProcessor.FIXED_WINDOW_PREFIX, "");
-                String shardKey = getShardKey(tmpKey);
-                int shardId = Function.calculateShardId(shardKey, totalDiskShards);
-                byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
+        if (!wrapperBatchAccumulator.isEmpty()) {
+            // Drain the map
+            Map<String, WrapperMeasurment> wrapperBatchSnapshot = new HashMap<>();
+            Iterator<Map.Entry<String, WrapperMeasurment>> it = wrapperBatchAccumulator.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<String, WrapperMeasurment> entry = it.next();
+                wrapperBatchSnapshot.put(entry.getKey(), entry.getValue());
+                it.remove();
             }
 
-            // Submit batch for each shard
-            for (Map.Entry<Integer, List<Map.Entry<String, WrapperMeasurment>>> shardEntry : byShard.entrySet()) {
-                int shardId = shardEntry.getKey();
-                AsyncRocksDbWriter writer = shardWriters.get(shardId);
+            if (!wrapperBatchSnapshot.isEmpty()) {
+                // Group by shard for efficiency
+                Map<Integer, List<Map.Entry<String, WrapperMeasurment>>> byShard = new HashMap<>();
                 
-                if (writer == null) {
-                    logger.warn("Shard {} not assigned, skipping {} wrapper measurments", 
-                               shardId, shardEntry.getValue().size());
-                    failed += shardEntry.getValue().size();
-                    continue;
+                for (Map.Entry<String, WrapperMeasurment> entry : wrapperBatchSnapshot.entrySet()) {
+                    // Use base key (without window size) for shard calculation
+                    String tmpKey = entry.getKey();
+                    tmpKey = tmpKey.replace(FraudProcessor.FIXED_WINDOW_PREFIX, "");
+                    String shardKey = getShardKey(tmpKey);
+                    int shardId = Function.calculateShardId(shardKey, totalDiskShards);
+                    byShard.computeIfAbsent(shardId, k -> new ArrayList<>()).add(entry);
                 }
 
-                // Submit each wrapper measurment in the batch
-                for (Map.Entry<String, WrapperMeasurment> entry : shardEntry.getValue()) {
-                    String key = entry.getKey();
-                    ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                // Submit batch for each shard
+                for (Map.Entry<Integer, List<Map.Entry<String, WrapperMeasurment>>> shardEntry : byShard.entrySet()) {
+                    int shardId = shardEntry.getKey();
+                    AsyncRocksDbWriter writer = shardWriters.get(shardId);
                     
-                    RetryUtil.retry(() -> {
-                        boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
-                        if (!ok) {
-                            logger.warn("Failed to persist wrapper measurment for key {} in batch", key);
-                        }
-                    });
-                    submitted++;
+                    if (writer == null) {
+                        logger.warn("Shard {} not assigned, skipping {} wrapper measurments", 
+                                   shardId, shardEntry.getValue().size());
+                        failed += shardEntry.getValue().size();
+                        continue;
+                    }
+
+                    // Submit each wrapper measurment in the batch
+                    for (Map.Entry<String, WrapperMeasurment> entry : shardEntry.getValue()) {
+                        String key = entry.getKey();
+                        ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
+                        
+                        RetryUtil.retry(() -> {
+                            boolean ok = writer.submitPutObjectWithCF(cf, toBytes(key), entry.getValue());
+                            if (!ok) {
+                                logger.warn("Failed to persist wrapper measurment for key {} in batch", key);
+                            }
+                        });
+                        submitted++;
+                    }
                 }
             }
-
-            // Clear the wrapper batch for this thread
-            wrapperBatch.clear();
         }
 
         long end = System.currentTimeMillis();
@@ -412,11 +509,22 @@ public class RocksDBService {
                     for (int shardId : assignedShards) {
                         RocksDB db = shardedDbs.get(shardId);
                         if (db == null) continue;
-                        try (RocksIterator it = db.newIterator()) {
-                            for (it.seek(prefixBytes); it.isValid(); it.next()) {
-                                byte[] key = it.key();
-                                if (!startsWith(key, prefixBytes)) break;
-                                keys.add(fromBytes(key));
+
+                        List<ColumnFamilyHandle> handles = Arrays.asList(
+                                cfDefaultByShard.get(shardId),
+                                cfCardByShard.get(shardId),
+                                cfMerchantByShard.get(shardId),
+                                cfCustomByShard.get(shardId)
+                        );
+
+                        for (ColumnFamilyHandle cf : handles) {
+                            if (cf == null) continue;
+                            try (RocksIterator it = db.newIterator(cf)) {
+                                for (it.seek(prefixBytes); it.isValid(); it.next()) {
+                                    byte[] key = it.key();
+                                    if (!startsWith(key, prefixBytes)) break;
+                                    keys.add(fromBytes(key));
+                                }
                             }
                         }
                     }
@@ -427,7 +535,8 @@ public class RocksDBService {
                     int shardId = Function.calculateShardId(pattern, totalDiskShards);
                     RocksDB db = shardedDbs.get(shardId);
                     if (db == null) return List.of();
-                    byte[] v = db.get(toBytes(pattern));
+                    ColumnFamilyHandle cf = getCFHandleForKey(shardId, pattern);
+                    byte[] v = db.get(cf, toBytes(pattern));
                     return (v != null) ? List.of(pattern) : List.of();
                 }
             } catch (Exception e) {
@@ -437,6 +546,7 @@ public class RocksDBService {
         });
     }
 
+    
     public List<String> getKeysStartingWith(String prefix) {
         return RetryUtil.retry(() -> {
             try {
@@ -446,11 +556,22 @@ public class RocksDBService {
                 for (int shardId : assignedShards) {
                     RocksDB db = shardedDbs.get(shardId);
                     if (db == null) continue;
-                    try (RocksIterator it = db.newIterator()) {
-                        for (it.seek(prefixBytes); it.isValid(); it.next()) {
-                            byte[] key = it.key();
-                            if (!startsWith(key, prefixBytes)) break;
-                            keys.add(fromBytes(key));
+
+                    List<ColumnFamilyHandle> handles = Arrays.asList(
+                            cfDefaultByShard.get(shardId),
+                            cfCardByShard.get(shardId),
+                            cfMerchantByShard.get(shardId),
+                            cfCustomByShard.get(shardId)
+                    );
+
+                    for (ColumnFamilyHandle cf : handles) {
+                        if (cf == null) continue;
+                        try (RocksIterator it = db.newIterator(cf)) {
+                            for (it.seek(prefixBytes); it.isValid(); it.next()) {
+                                byte[] key = it.key();
+                                if (!startsWith(key, prefixBytes)) break;
+                                keys.add(fromBytes(key));
+                            }
                         }
                     }
                 }

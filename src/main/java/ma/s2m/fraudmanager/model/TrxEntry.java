@@ -1,6 +1,7 @@
 package ma.s2m.fraudmanager.model;
 
 import java.io.Serializable;
+import java.util.HashMap;
 import java.util.Map;
 
 import ma.s2m.auth.impl.VRTransactionSummary;
@@ -28,4 +29,14 @@ public class TrxEntry implements Serializable {
 
     public String getTxNo() { return txNo; }
     public void setTxNo(String txNo) { this.txNo = txNo; }
+
+    public TrxEntry clone() {
+        TrxEntry clone = new TrxEntry();
+        //clone.setTx(new VRTransactionSummary(this.tx));
+        clone.setEventTimeMs(this.eventTimeMs);
+        clone.setRecordDelta(new HashMap<>(this.recordDelta));
+        clone.setLastsDelta(new HashMap<>(this.lastsDelta));
+        clone.setTxNo(this.txNo);
+        return clone;
+    }
 }
