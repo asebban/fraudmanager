@@ -204,7 +204,7 @@ public class FraudProcessor {
             session = acquireSession(extendedSubject, measurment.getWindowSize(), measurment.getKey(), correlationId);
             session.execute(measurment, extendedSubject, correlationId);
         } catch (Exception e) {
-            logger.error("Error executing session for subject: {}", extendedSubject, e);
+            logger.error("Error executing session for subject: {}, key {}, windowSize {}, measurment {}, correlationId [{}]", extendedSubject, measurment.getKey(), measurment.getWindowSize(), measurment, correlationId, e);
         } finally {
             releaseSession(extendedSubject, session);
         }

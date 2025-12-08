@@ -100,9 +100,9 @@ final class StatefulDroolsSession implements DroolsSession {
             Long t0 = System.currentTimeMillis();
             ks.fireAllRules();
             Long t1 = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}", (t1 - t0),
+            logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}, last rule name: {}", (t1 - t0),
                     this.correlationId, this.extendedSubject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
-                    m != null ? m.getKey() : "N/A", formattedDuration);
+                    m != null ? m.getKey() : "N/A", formattedDuration, this.ruleProfiler.getLastRuleName());
             if (droolsProfilerEnabled) {
                 final Measurment finalM = m;
                 final String cId = this.correlationId;

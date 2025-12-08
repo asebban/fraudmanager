@@ -11,6 +11,7 @@ public final class RuleProfiler extends DefaultAgendaEventListener {
 
   private static final class Stat { long nanos; long fires; }
   private static final Map<String, Stat> stats = new ConcurrentHashMap<>();
+  private String lastRuleName = "";
 
   private final ThreadLocal<Long> t0 = ThreadLocal.withInitial(new Supplier<Long>() {
     @Override
@@ -27,7 +28,10 @@ public final class RuleProfiler extends DefaultAgendaEventListener {
 
   public void reset() { stats.clear(); }
   
-  @Override public void beforeMatchFired(BeforeMatchFiredEvent e) { t0.set(System.nanoTime()); }
+  @Override public void beforeMatchFired(BeforeMatchFiredEvent e) { 
+    t0.set(System.nanoTime()); 
+    lastRuleName = e.getMatch().getRule().getName();
+  }
 
   @Override public void afterMatchFired(AfterMatchFiredEvent e) {
     long dt = System.nanoTime() - t0.get();
@@ -46,5 +50,13 @@ public final class RuleProfiler extends DefaultAgendaEventListener {
               e.getValue().nanos/1_000_000.0, e.getValue().fires, e.getKey()));
     }
     return out;
+  }
+
+  public String getLastRuleName() {
+    return lastRuleName;
+  }
+
+  public void setLastRuleName(String lastRuleName) {
+    this.lastRuleName = lastRuleName;
   }
 }

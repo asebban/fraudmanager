@@ -9,6 +9,7 @@ import ma.s2m.fraudmanager.util.RetryUtil;
 import ma.s2m.functions.Function;
 
 import org.rocksdb.*;
+import org.rocksdb.util.SizeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +34,10 @@ import java.util.concurrent.TimeUnit;
 public class RocksDBService {
     private static final Logger logger = LoggerFactory.getLogger(RocksDBService.class);
 
+    static {
+        RocksDB.loadLibrary();
+    }
+
     // Jackson mapper for legacy JSON maps
     private final ObjectMapper mapper = new ObjectMapper();
     private static final TypeReference<Map<Long, Measurment>> MEAS_MAP_TYPE =
@@ -51,6 +56,10 @@ public class RocksDBService {
 
     // Async writers per shard
     private final Map<Integer, AsyncRocksDbWriter> shardWriters;
+
+    // RocksDB Cache and Filter (kept as members to close them properly)
+    private final Cache cache;
+    private final Filter filter;
 
     // Shared batch accumulator for reducing serialization overhead
     private final Map<String, Measurment> batchAccumulator = new ConcurrentHashMap<>();
@@ -87,12 +96,25 @@ public class RocksDBService {
         // Open RocksDB instance for each assigned shard
         // -----------------------------------------------------------------
         try {
+            // -----------------------------------------------------------------
+            // Optimization: Block Cache & Bloom Filters
+            // -----------------------------------------------------------------
+            this.cache = new LRUCache(512 * SizeUnit.MB); // 512 MB cache
+            this.filter = new BloomFilter(10); // 10 bits per key (~1% false positive)
+
+            BlockBasedTableConfig tableOptions = new BlockBasedTableConfig()
+                    .setBlockCache(cache)
+                    .setFilterPolicy(filter)
+                    .setCacheIndexAndFilterBlocks(true) // Cache index/filter blocks to avoid I/O
+                    .setPinL0FilterAndIndexBlocksInCache(true); // Pin L0 index/filters for speed
+
             @SuppressWarnings("resource")
             ColumnFamilyOptions defaultCFOptions = new ColumnFamilyOptions()
                     .setCompactionStyle(CompactionStyle.UNIVERSAL)
                     .setWriteBufferSize(64 * 1024 * 1024) // 64 MiB
                     .setMaxWriteBufferNumber(3)
-                    .setTargetFileSizeBase(64 * 1024 * 1024);
+                    .setTargetFileSizeBase(64 * 1024 * 1024)
+                    .setTableFormatConfig(tableOptions); // Apply optimizations
             
             List<ColumnFamilyDescriptor> cfDescriptors = Arrays.asList(
                     new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, defaultCFOptions),
@@ -626,6 +648,11 @@ public class RocksDBService {
                 
                 logger.info("Closed RocksDB shard {}", shardId);
             }
+            
+            // Close shared cache and filter
+            if (cache != null) cache.close();
+            if (filter != null) filter.close();
+            
         } catch (Exception e) {
             logger.error("Error closing RocksDB resources", e);
         }
