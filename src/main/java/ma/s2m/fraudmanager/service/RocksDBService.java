@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * - Uses a column family per subject (CARD, MERCHANT, CUSTOM) and a
  *   prefix‑rich key format: <subject>[:<custom>]:<key>:<windowSize>.
  */
-public class RocksDBService {
+public class RocksDBService implements IStoreService {
     private static final Logger logger = LoggerFactory.getLogger(RocksDBService.class);
 
     static {
@@ -74,8 +74,8 @@ public class RocksDBService {
         // -----------------------------------------------------------------
         // Initialize shard configuration
         // -----------------------------------------------------------------
-        this.totalDiskShards = AppConfig.rocksDBDiskShardCount;
-        this.assignedShards = new ArrayList<>(AppConfig.rocksDBShards);
+        this.totalDiskShards = AppConfig.storageDiskShardCount;
+        this.assignedShards = new ArrayList<>(AppConfig.storageShards);
         if (this.assignedShards.isEmpty()) {
             // Fallback: if no shards configured, assign shard 0
             logger.warn("No shards assigned to this node, defaulting to shard 0");
@@ -131,7 +131,7 @@ public class RocksDBService {
             
             for (int shardId : assignedShards) {
                 String shardPath = dbPath + File.separator + "shard-" + shardId;
-                logger.info("Node: {}: Opening RocksDB shard {} at {}", AppConfig.rocksdbNodeName, shardId, shardPath);
+                logger.info("Node: {}: Opening RocksDB shard {} at {}", AppConfig.nodeName, shardId, shardPath);
                 
                 File shardDir = new File(shardPath);
                 if (!shardDir.exists() && !shardDir.mkdirs()) {
@@ -693,7 +693,7 @@ public class RocksDBService {
 
         /** Create a  new instance for a specific shard - not using singleton pattern */
         public static AsyncRocksDbWriter createInstance(RocksDB db, int queueSize, int shardId) {
-            return new AsyncRocksDbWriter(db, queueSize, AppConfig.rocksDBSubmitTimeoutMs, AppConfig.rocksDBMemoryShardCount);
+            return new AsyncRocksDbWriter(db, queueSize, AppConfig.storageSubmitTimeoutMs, AppConfig.storageMemoryShardCount);
         }
 
         private int getMemoryShardIndex(byte[] key) {

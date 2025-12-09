@@ -23,12 +23,12 @@ class RocksDBServiceTest {
     @BeforeEach
     void setUp() {
         // Configure AppConfig to use the temp directory and a single shard
-        AppConfig.rocksDBDiskShardCount = 1;
-        AppConfig.rocksDBShards = new ArrayList<>();
-        AppConfig.rocksDBShards.add(0);
-        AppConfig.rocksdbNodeName = "test-node";
-        AppConfig.rocksDBMemoryShardCount = 1;
-        AppConfig.rocksDBSubmitTimeoutMs = 100;
+        AppConfig.storageDiskShardCount = 1;
+        AppConfig.storageShards = new ArrayList<>();
+        AppConfig.storageShards.add(0);
+        AppConfig.nodeName = "test-node";
+        AppConfig.storageMemoryShardCount = 1;
+        AppConfig.storageSubmitTimeoutMs = 100;
     }
 
     @AfterEach

@@ -31,7 +31,6 @@ import io.nats.client.Connection;
 import io.nats.client.Message;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Set;
-
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,51 +53,50 @@ import org.slf4j.LoggerFactory;
 
 public class FraudProcessor {
 
+    private static final Logger logger = LoggerFactory.getLogger(FraudProcessor.class);
+    private final IStoreService storageService;
+    private final Connection natsConnection;
+    private final ExecutorService executor;
+    private IMessageSender messageSender;
+    private DroolsSessionFactory sessionFactory;
+    private final Map<String, BlockingQueue<DroolsSession>> sessionPools = new ConcurrentHashMap<>();
+    private final int sessionPoolSize;
+    private final KeyProcessor keyProcessor;
+
     public static final String WINDOW_SEPARATOR = "/";
     public static final String KEY_SEPARATOR = ":";
     public static final String FIXED_WINDOW_PREFIX = "FW:";
     public static final String CARD_KEY_PREFIX = Subject.CARD + KEY_SEPARATOR;
     public static final String MERCHANT_KEY_PREFIX = Subject.MERCHANT + KEY_SEPARATOR;
     public static final String CUSTOM_KEY_PREFIX = Subject.CUSTOM + KEY_SEPARATOR;
-    public static final String LOCK_KEY_PREFIX = "lock:";
-    public static final String NO_ERROR_MESSAGE = "";
-    public static final Integer FIXED_WINDOW = 1;
-    public static final Integer SLIDING_WINDOW = 2;
-    public static final String GLOBAL_RECORD_KEY_SUFFIX = "GLOBAL"; 
+    public static final String GLOBAL_RECORD_KEY_SUFFIX = "GLOBAL";
+    public static final String NO_ERROR_MESSAGE = "No Error";
+    public static final String LOCK_KEY_PREFIX = "LOCK" + KEY_SEPARATOR;
 
-    private static final Logger logger = LoggerFactory.getLogger(FraudProcessor.class);
-    private final RocksDBService rocksDBService;
-    private final Connection natsConnection;
-    private final KeyProcessor keyProcessor;
-    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor(); // Pool pour traitement
-                                                                                          // parallèle
-    private IMessageSender messageSender;
-    private DroolsSessionFactory sessionFactory;
-    private int sessionPoolSize = AppConfig.appThreadSessionPoolSize;
-    private Map<String, BlockingQueue<DroolsSession>> sessionPools = new ConcurrentHashMap<>();
-
-    @SuppressWarnings("unused")
-    private DroolsSession createNewDroolsSession() {
-        HashMap<String, Object> globals = new HashMap<>(10);
-        globals.put("timeConverter", new TimeConversion());
-        globals.put("externalSystem", new ExternalSystem());
-        globals.put("messageSender", messageSender);
-        globals.put("typeConverter", new TypeConverter());
-
-        DroolsSession s = sessionFactory.newSession(SessionMode.STATEFUL, globals);
-        return s;
-    }
-
-    public FraudProcessor(RocksDBService rocksDBService, Connection natsConnection) throws IOException {
-        this.rocksDBService = rocksDBService;
+    public FraudProcessor(IStoreService storageService, Connection natsConnection) {
+        this.storageService = storageService;
         this.natsConnection = natsConnection;
-        this.keyProcessor = new KeyProcessor(rocksDBService);
-        initProcessor();
-        initializeSessionPools();
+        this.executor = Executors.newVirtualThreadPerTaskExecutor();
+        this.sessionPoolSize = AppConfig.appThreadSessionPoolSize;
+        this.keyProcessor = new KeyProcessor(storageService);
+        
+        try {
+            initProcessor();
+            initSessionPools();
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to initialize FraudProcessor", e);
+        }
     }
 
-    private void initializeSessionPools() {
-        Set<String> subjects = Set.of(Subject.CARD, Subject.MERCHANT, Subject.CUSTOM);
+    private void initSessionPools() {
+        Set<String> subjects = new HashSet<>();
+        if (RulesConfig.cardSubjectPresent) subjects.add(Subject.CARD);
+        if (RulesConfig.merchantSubjectPresent) subjects.add(Subject.MERCHANT);
+        if (RulesConfig.customSubjectPresent) {
+            subjects.addAll(RulesConfig.rulesMapForCustomSubject.keySet());
+            subjects.addAll(RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet());
+        }
+
         for (String subject : subjects) {
             BlockingQueue<DroolsSession> queue = new ArrayBlockingQueue<>(sessionPoolSize);
             for (int i = 0; i < sessionPoolSize; i++) {
@@ -149,7 +147,7 @@ public class FraudProcessor {
 
         String subjectKey = extendedSubject;
         if (extendedSubject.contains(KEY_SEPARATOR)) {
-            subjectKey = extendedSubject.substring(0, extendedSubject.indexOf(KEY_SEPARATOR));
+            subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
 
         Long beginAcquireSession = System.currentTimeMillis();
@@ -167,7 +165,7 @@ public class FraudProcessor {
 
         String subjectKey = extendedSubject;
         if (extendedSubject.contains(KEY_SEPARATOR)) {
-            subjectKey = extendedSubject.substring(0, extendedSubject.indexOf(KEY_SEPARATOR));
+            subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
 
         if (session != null) {
@@ -810,8 +808,8 @@ public class FraudProcessor {
             Long endArrivalTime = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Pre-processing Time before starting the threads", (endArrivalTime - arrivalTime), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
-            int cardKeyShard = Function.calculateShardId(cardKey, AppConfig.rocksDBDiskShardCount);
-            Boolean isCardKeyBelongingToMe = AppConfig.rocksDBShards.contains(cardKeyShard);
+            int cardKeyShard = Function.calculateShardId(cardKey, AppConfig.storageDiskShardCount);
+            Boolean isCardKeyBelongingToMe = AppConfig.storageShards.contains(cardKeyShard);
 
             if (RulesConfig.cardSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCardKeyBelongingToMe))) { // There are rules for the sliding windows of card subject
                 // parallel processing of card subjects with CompletableFutures. There are more than one CompletableFuture for card subject 
@@ -854,8 +852,8 @@ public class FraudProcessor {
                 cardProcessingFutures.add(cardProcessingFixedWindow);
             }
 
-            int merchantKeyShard = Function.calculateShardId(merchantKey, AppConfig.rocksDBDiskShardCount);
-            Boolean isMerchantKeyBelongingToMe = AppConfig.rocksDBShards.contains(merchantKeyShard);
+            int merchantKeyShard = Function.calculateShardId(merchantKey, AppConfig.storageDiskShardCount);
+            Boolean isMerchantKeyBelongingToMe = AppConfig.storageShards.contains(merchantKeyShard);
 
             if (RulesConfig.merchantSubjectPresent && (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isMerchantKeyBelongingToMe))) { // There are rules for the sliding windows of merchant subject         
                 // parallel processing of merchant subjects with CompletableFutures. There are more than one CompletableFuture for merchant subject 
@@ -905,8 +903,8 @@ public class FraudProcessor {
                     String keyValue = tx.getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
 
-                    int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
-                    Boolean isCustomKeyBelongingToMe = AppConfig.rocksDBShards.contains(customKeyShard);
+                    int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.storageDiskShardCount);
+                    Boolean isCustomKeyBelongingToMe = AppConfig.storageShards.contains(customKeyShard);
 
                     if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isCustomKeyBelongingToMe)) { // There are rules for the sliding windows of custom subject
                         CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
@@ -935,8 +933,8 @@ public class FraudProcessor {
                     String keyValue = tx.getKey(keySpec);
                     String customSubjectKey = CUSTOM_KEY_PREFIX + customSubject + KEY_SEPARATOR + keyValue;
 
-                    int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.rocksDBDiskShardCount);
-                    Boolean isRightShardCustom = AppConfig.rocksDBShards.contains(customKeyShard);
+                    int customKeyShard = Function.calculateShardId(customSubjectKey, AppConfig.storageDiskShardCount);
+                    Boolean isRightShardCustom = AppConfig.storageShards.contains(customKeyShard);
 
                     if (!AppConfig.fraudManagerMultiNode || (AppConfig.fraudManagerMultiNode && isRightShardCustom)) { // There are rules for the fixed windows of custom subject
                         CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
@@ -1057,7 +1055,7 @@ public class FraudProcessor {
         String eventKey = subject + KEY_SEPARATOR + suffix + key;
         String globalRecordKey = eventKey + WINDOW_SEPARATOR + GLOBAL_RECORD_KEY_SUFFIX;
 
-        RecordHashMap globalRecord = rocksDBService.getRecordHashMapByKey(globalRecordKey);
+        RecordHashMap globalRecord = storageService.getRecordHashMapByKey(globalRecordKey);
         if (globalRecord == null) {
             globalRecord = new RecordHashMap();
         }
@@ -1068,7 +1066,7 @@ public class FraudProcessor {
 
                 Long ruleWindowSize = (Long) entry.getKey();
                 Long stateGetStart = System.currentTimeMillis();
-                Measurment measurment = rocksDBService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
+                Measurment measurment = storageService.getMeasurmentByKey(eventKey + WINDOW_SEPARATOR + ruleWindowSize);
                 Long stateGetEnd = System.currentTimeMillis();
                 logger.debug("Time {} ms [{}] [{}] [Thread : {}] win={} key={} trx={} processEvent: State get time", (stateGetEnd - stateGetStart), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), TimeConversion.toHumanReadableDuration(ruleWindowSize), key, processedEvent.getTransaction().getTransactionNo());
 
@@ -1095,7 +1093,7 @@ public class FraudProcessor {
                 measurment.setGlobalRecords(null); // clear global records because they don't need to be stored with the timeramed measurment
 
                 // update the state of the measurment in the database
-                rocksDBService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + measurment.getWindowSize(), measurment);
+                storageService.setMeasurmentByKey(eventKey + WINDOW_SEPARATOR + measurment.getWindowSize(), measurment);
             }
             
         } else { // fixed window
@@ -1110,7 +1108,7 @@ public class FraudProcessor {
                 try {
                     // retrieve the state of the fixed window from the database
                     long retrieveBegin = System.currentTimeMillis();
-                    wm = rocksDBService.getWrapperMeasurmentByKey(fwEventKey + WINDOW_SEPARATOR + ruleWindowSize);
+                    wm = storageService.getWrapperMeasurmentByKey(fwEventKey + WINDOW_SEPARATOR + ruleWindowSize);
                     long retrieveEnd = System.currentTimeMillis();
                     logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: Retrieving state for window {}", (retrieveEnd - retrieveBegin), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), TimeConversion.toHumanReadableDuration(ruleWindowSize), fwEventKey, TimeConversion.toHumanReadableDuration(ruleWindowSize));
                 }
@@ -1137,7 +1135,7 @@ public class FraudProcessor {
                 // update the state
                 try {
                     long updateBegin = System.currentTimeMillis();
-                    rocksDBService.setWrapperMeasurmentByKey(fwEventKey + WINDOW_SEPARATOR + ruleWindowSize, wm);
+                    storageService.setWrapperMeasurmentByKey(fwEventKey + WINDOW_SEPARATOR + ruleWindowSize, wm);
                     long updateEnd = System.currentTimeMillis();
                     logger.debug("Time {} ms [{}] FixedWindows: [{}] win={} key={} ProcessFunction: Updating state for window {}", (updateEnd - updateBegin), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), TimeConversion.toHumanReadableDuration(ruleWindowSize), fwEventKey, TimeConversion.toHumanReadableDuration(ruleWindowSize));
                 } catch (Exception e) {
@@ -1150,7 +1148,7 @@ public class FraudProcessor {
         }
 
         // update the global record in the database
-        this.rocksDBService.setRecordHashMapByKey(globalRecordKey, globalRecord);
+        this.storageService.setRecordHashMapByKey(globalRecordKey, globalRecord);
 
         processedEvent.setAlertSet(alertSet);
         return processedEvent;

@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>ma.s2m</groupId>
     <artifactId>fraudmanager</artifactId>
-    <version>3.2.0-RELEASE</version>
+    <version>4.0.0-RELEASE</version>
 
     <properties>
         <java.version>21</java.version>
@@ -88,6 +88,11 @@
             <groupId>ma.s2m</groupId>
             <artifactId>config-repository</artifactId>
             <version>1.0.0-RELEASE</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.store</groupId>
+            <artifactId>storage-embedded</artifactId>
+            <version>2.0.0</version>
         </dependency>
     </dependencies>
 

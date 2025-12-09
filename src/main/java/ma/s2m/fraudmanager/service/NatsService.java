@@ -19,7 +19,7 @@ public class NatsService {
     private final FraudProcessor fraudProcessor;
     private final QueryProcessor queryProcessor;
     @SuppressWarnings("unused")
-    private final RocksDBService rocksDBService;
+    private final IStoreService storageService;
     private final String topic;
     private final String queryTopic;
 
@@ -27,18 +27,18 @@ public class NatsService {
     private Dispatcher dispatcher;
     private Dispatcher queryDispatcher;
 
-    public NatsService(Connection nc, ExecutorService executor, FraudProcessor fraudProcessor, QueryProcessor queryProcessor, RocksDBService rocksDBService) {
+    public NatsService(Connection nc, ExecutorService executor, FraudProcessor fraudProcessor, QueryProcessor queryProcessor, IStoreService storageService) {
         this.nc = nc;
         this.executor = executor;
         this.fraudProcessor = fraudProcessor;
         this.queryProcessor = queryProcessor;
-        this.rocksDBService = rocksDBService;
+        this.storageService = storageService;
         this.topic = AppConfig.natsTopic;
         this.queryTopic = AppConfig.natsQueryTopic;
     }
 
-    public RocksDBService getRocksDBService() {
-        return rocksDBService;
+    public IStoreService getStorageService() {
+        return storageService;
     }
 
     /**
@@ -58,7 +58,7 @@ public class NatsService {
                     fraudProcessor.process(msg);
                     
                     // Flush accumulated writes to reduce serialization overhead
-                    rocksDBService.flushBatch();
+                    storageService.flushBatch();
                     
                     long endTime = System.currentTimeMillis();
                     String correlationId = msg.getHeaders() == null ? null
@@ -76,10 +76,10 @@ public class NatsService {
             logger.info("Subscribed to single topic: {}", topic);
         } else {
             // Multi-node mode: subscribe to one topic per shard
-            for (Integer shardId : AppConfig.rocksDBShards) {
+            for (Integer shardId : AppConfig.storageShards) {
                 String shardTopic = "fraud.check." + shardId;
                 dispatcher.subscribe(shardTopic, "fraudmanager-group");
-                logger.info("{} subscribed to shard topic: {}", AppConfig.rocksdbNodeName, shardTopic);
+                logger.info("{} subscribed to shard topic: {}", AppConfig.nodeName, shardTopic);
             }
         }
 
@@ -109,10 +109,10 @@ public class NatsService {
             queryDispatcher.subscribe(queryTopic, "fraudmanager-query-group");
             logger.info("Subscribed to single query topic: {}", queryTopic);
         } else {
-            for (Integer shardId : AppConfig.rocksDBShards) {
+            for (Integer shardId : AppConfig.storageShards) {
                 String shardQueryTopic = queryTopic + "." + shardId;
                 queryDispatcher.subscribe(shardQueryTopic, "fraudmanager-query-group");
-                logger.info("{} subscribed to shard query topic: {}", AppConfig.rocksdbNodeName, shardQueryTopic);
+                logger.info("{} subscribed to shard query topic: {}", AppConfig.nodeName, shardQueryTopic);
             }
         }
 

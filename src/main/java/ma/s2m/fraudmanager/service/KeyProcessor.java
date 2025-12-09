@@ -8,7 +8,7 @@ import org.slf4j.Logger;
 
 public class KeyProcessor {
 
-    private RocksDBService rocksDBService;
+    private IStoreService storageService;
 
     // Constantes pour le verrouillage
     private static final int LOCK_RETRY_DELAY_MS = 10;  // Délai entre les tentatives
@@ -16,8 +16,8 @@ public class KeyProcessor {
     Logger logger = org.slf4j.LoggerFactory.getLogger(KeyProcessor.class);
 
 
-    public KeyProcessor(RocksDBService rocksDBService) {
-        this.rocksDBService = rocksDBService;
+    public KeyProcessor(IStoreService storageService) {
+        this.storageService = storageService;
     }
     /**
      * Exécute une opération avec verrouillage automatique
@@ -32,7 +32,7 @@ public class KeyProcessor {
         // Tentatives d'acquisition du verrou
         int retries = 0;
         while (retries < MAX_LOCK_RETRIES) {
-            if (rocksDBService.acquireLock(lockKey, lockValue)) {
+            if (storageService.acquireLock(lockKey, lockValue)) {
                 try {
                     // Splitter la dataKey avec séparateur ":" et prendre l'élément d'index 1
                     int index = dataKey.indexOf(":");
@@ -48,7 +48,7 @@ public class KeyProcessor {
                     return null;
                 } finally {
                     // Toujours libérer le verrou
-                    rocksDBService.releaseLock(lockKey, lockValue);
+                    storageService.releaseLock(lockKey, lockValue);
                 }
             }
             else {

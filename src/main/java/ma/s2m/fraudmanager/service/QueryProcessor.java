@@ -23,11 +23,11 @@ public class QueryProcessor {
     @SuppressWarnings("unused")
     private Connection nc;
     @SuppressWarnings("unused")
-    private RocksDBService rocksDBService;
+    private IStoreService storageService;
     private Logger logger = LoggerFactory.getLogger(QueryProcessor.class);
 
-    public QueryProcessor(RocksDBService rocksDBService, Connection nc) {
-        this.rocksDBService = rocksDBService;
+    public QueryProcessor(IStoreService storageService, Connection nc) {
+        this.storageService = storageService;
         this.nc = nc;
     }
 
@@ -61,7 +61,7 @@ public class QueryProcessor {
 
         String subjectKey = request.getSubject() + ":" + request.getKey();
 
-        List<String> keys = this.rocksDBService.getKeysStartingWith(subjectKey);
+        List<String> keys = this.storageService.getKeysStartingWith(subjectKey);
 
         Long windowSize = 0L;
         for (String key : keys) {
@@ -80,7 +80,7 @@ public class QueryProcessor {
 
             String specificKey = subjectKey + FraudProcessor.WINDOW_SEPARATOR + windowSize;
 
-            Measurment measurment = this.rocksDBService.getMeasurmentByKey(specificKey);
+            Measurment measurment = this.storageService.getMeasurmentByKey(specificKey);
             if (measurment != null) {
                 for (Map.Entry<String, MeasurmentRecord> e : measurment.getRecords().getRecordHashMap().entrySet()) {
                     Indicator indicator = new Indicator();
@@ -95,7 +95,7 @@ public class QueryProcessor {
             }
         }
 
-        RecordHashMap globalRecords = this.rocksDBService.getRecordHashMapByKey(subjectKey + FraudProcessor.WINDOW_SEPARATOR + FraudProcessor.GLOBAL_RECORD_KEY_SUFFIX);
+        RecordHashMap globalRecords = this.storageService.getRecordHashMapByKey(subjectKey + FraudProcessor.WINDOW_SEPARATOR + FraudProcessor.GLOBAL_RECORD_KEY_SUFFIX);
         if (globalRecords != null && globalRecords.getRecordHashMap() != null) {
             for (Map.Entry<String, MeasurmentRecord> e : globalRecords.getRecordHashMap().entrySet()) {
                 Indicator indicator = new Indicator();

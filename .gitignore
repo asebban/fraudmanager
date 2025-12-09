@@ -2,3 +2,4 @@ target/
 logs/
 *.log
 rocksdb_data/
+storage_data/

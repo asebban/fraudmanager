@@ -8,7 +8,7 @@ import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
-import ma.s2m.fraudmanager.service.RocksDBService;
+import ma.s2m.fraudmanager.service.IStoreService;
 import ma.s2m.fraudmanager.util.Subject;
 
 import java.util.ArrayList;
@@ -35,10 +35,10 @@ public class Main {
             natsService = config.natsService();
             natsService.startConsumer(); // Démarre le consumer NATS et les workers
             StringJoiner sj = new StringJoiner(", ");
-            for (Integer shard : AppConfig.rocksDBShards) {
+            for (Integer shard : AppConfig.storageShards) {
                 sj.add(String.valueOf(shard));
             }
-            logger.info("Node {} started owning shards {}. Listening for transactions...", AppConfig.rocksdbNodeName, sj.toString());
+            logger.info("Node {} started owning shards {}. Listening for transactions...", AppConfig.nodeName, sj.toString());
             // Blocage pour garder l'app en vie en permanence
             Thread.currentThread().join();
         } catch (Exception e) {
@@ -242,45 +242,37 @@ public class Main {
                     natsService.stop();
                 }
 
-                if (AppConfig.appRocksDBCleanOnShutdown) {
-                    logger.info("Intercepting shutdown signal. Cleaning up RocksDB keys...");
-                    if (natsService != null && natsService.getRocksDBService() != null) {
-                        RocksDBService rocksDBService = natsService.getRocksDBService();
+                if (AppConfig.appStorageCleanOnShutdown) {
+                    logger.info("Intercepting shutdown signal. Cleaning up storage data...");
+                    if (natsService != null && natsService.getStorageService() != null) {
+                        IStoreService storageService = natsService.getStorageService();
 
-                        // Supprimer les clés commençant par "Card:"
-                        List<String> keys = rocksDBService.getKeysByPattern(FraudProcessor.CARD_KEY_PREFIX + "*");
-                        if (keys != null) {
-                            keys.forEach(rocksDBService::deleteKey);
+                        List<String> keys = storageService.getKeysByPattern(FraudProcessor.CARD_KEY_PREFIX + "*");
+                        keys.addAll(storageService.getKeysByPattern(FraudProcessor.MERCHANT_KEY_PREFIX + "*"));
+                        keys.addAll(storageService.getKeysByPattern(FraudProcessor.CUSTOM_KEY_PREFIX + "*"));
+                        keys.addAll(storageService.getKeysByPattern(FraudProcessor.LOCK_KEY_PREFIX + "*"));
+
+                        for (String key : keys) {
+                            try {
+                                storageService.deleteKey(key);
+                            } catch (Exception e) {
+                                logger.error("Error deleting key: {}", key, e);
+                            }
                         }
-                        // Supprimer les clés commençant par "Merchant:"
-                        keys = rocksDBService.getKeysByPattern(FraudProcessor.MERCHANT_KEY_PREFIX + "*");
-                        if (keys != null) {
-                            keys.forEach(rocksDBService::deleteKey);
-                        }
-                        // Supprimer les clés commençant par "Custom:"
-                        keys = rocksDBService.getKeysByPattern(FraudProcessor.CUSTOM_KEY_PREFIX + "*");
-                        if (keys != null) {
-                            keys.forEach(rocksDBService::deleteKey);
-                        }
-                        // Supprimer les clés commençant par "lock:"
-                        keys = rocksDBService.getKeysByPattern(FraudProcessor.LOCK_KEY_PREFIX + "*");
-                        if (keys != null) {
-                            keys.forEach(rocksDBService::deleteKey);
-                        }
-                        logger.info("RocksDB cleanup completed.");
+                        logger.info("Storage cleanup completed.");
                     } else {
-                        logger.warn("RocksDBService not available for cleanup.");
+                        logger.warn("StorageService not available for cleanup.");
                     }
                 } else {
-                    logger.info("RocksDB cleanup on shutdown is disabled. Skipping cleanup.");
+                    logger.info("Storage cleanup on shutdown is disabled. Skipping cleanup.");
                 }
 
-                if (natsService != null && natsService.getRocksDBService() != null) {
-                    natsService.getRocksDBService().close();
+                if (natsService != null && natsService.getStorageService() != null) {
+                    natsService.getStorageService().close();
                 }
 
             } catch (Exception e) {
-                logger.error("Error during RocksDB cleanup on shutdown", e);
+                logger.error("Error during storage cleanup on shutdown", e);
             }
         }));
     }
