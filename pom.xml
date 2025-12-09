@@ -72,7 +72,7 @@
         <dependency>
             <groupId>ma.medtech</groupId>
             <artifactId>drool-builder</artifactId>
-            <version>3.1.0-FLINKLESS-RELEASE</version>
+            <version>3.2.0-FLINKLESS-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
