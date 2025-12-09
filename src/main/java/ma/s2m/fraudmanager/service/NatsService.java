@@ -52,7 +52,9 @@ public class NatsService {
             executor.submit(() -> {
                 try {
                     long startTime = System.currentTimeMillis();
-                    msg.getHeaders().put("x-recv-ts-ms", String.valueOf(startTime));
+                    if (msg.getHeaders() != null) {
+                        msg.getHeaders().put("x-recv-ts-ms", String.valueOf(startTime));
+                    }
                     fraudProcessor.process(msg);
                     
                     // Flush accumulated writes to reduce serialization overhead
@@ -102,7 +104,17 @@ public class NatsService {
                 }
             });
         });
-        queryDispatcher.subscribe(queryTopic, "fraudmanager-query-group");
+        
+        if (!AppConfig.fraudManagerMultiNode) {
+            queryDispatcher.subscribe(queryTopic, "fraudmanager-query-group");
+            logger.info("Subscribed to single query topic: {}", queryTopic);
+        } else {
+            for (Integer shardId : AppConfig.rocksDBShards) {
+                String shardQueryTopic = queryTopic + "." + shardId;
+                queryDispatcher.subscribe(shardQueryTopic, "fraudmanager-query-group");
+                logger.info("{} subscribed to shard query topic: {}", AppConfig.rocksdbNodeName, shardQueryTopic);
+            }
+        }
 
         logger.info("Started virtual‑thread executor for processing NATS messages and query dispatcher");
 

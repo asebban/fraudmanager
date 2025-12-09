@@ -85,7 +85,7 @@ public class AppConfig {
         rocksDBQueueSize = Integer.parseInt(centralRepository.getProperty("rocksdb.queue.size", "10000"));
         appProcessorSubjectParallelismThreshold = Integer.parseInt(centralRepository.getProperty("app.processor.subject.parallelism.threshold", "10"));
         waitTime = Long.parseLong(centralRepository.getProperty("wait.time", "300000"));
-        natsQueryTopic = centralRepository.getProperty("nats.query.topic", "");
+        natsQueryTopic = centralRepository.getProperty("nats.query.topic", "fraud.query");
         rocksDBMemoryShardCount = Integer.parseInt(centralRepository.getProperty("rocksdb.memory.shard.count", "4"));
         rocksDBSubmitTimeoutMs = Long.parseLong(centralRepository.getProperty("rocksdb.submit.timeout.ms", "100"));
         rocksDBDiskShardCount = Integer.parseInt(centralRepository.getProperty("rocksdb.disk.shard.count", "64"));
