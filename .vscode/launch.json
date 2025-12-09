@@ -11,7 +11,7 @@
         "--option",
         "node.name=node-0",
         "--option",
-        "rocksdb.node-0.shards=0"
+        "storage.node-0.shards=0"
       ]
     },
     {
