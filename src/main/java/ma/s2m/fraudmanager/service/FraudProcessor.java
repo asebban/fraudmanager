@@ -104,7 +104,7 @@ public class FraudProcessor {
                 queue.offer(session);
             }
             sessionPools.put(subject, queue);
-            logger.info("Initialized Drools session pool for subject '{}' with {} sessions", subject,
+            logger.info(AppConfig.nodeName + ": Initialized Drools session pool for subject '{}' with {} sessions", subject,
                     sessionPoolSize);
         }
     }

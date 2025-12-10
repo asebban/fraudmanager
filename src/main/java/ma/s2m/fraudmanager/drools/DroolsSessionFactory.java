@@ -67,7 +67,7 @@ public final class DroolsSessionFactory {
         if (!kjar.toFile().exists()) {
             throw new IllegalStateException("KJAR file not found: " + kjar.toString());
         }
-        logger.info("Loading KJAR from: " + kjar.toString());
+        logger.info(AppConfig.nodeName + ": Loading KJAR from: " + kjar.toString());
 
         KieServices ks = KieServices.Factory.get();
         validateDrl(ks);

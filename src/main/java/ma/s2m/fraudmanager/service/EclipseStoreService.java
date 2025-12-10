@@ -68,7 +68,7 @@ public class EclipseStoreService implements IStoreService {
             this.assignedShards.add(0);
         }
 
-        logger.info("Initializing EclipseStore with {} total disk shards, assigned shards: {}",
+        logger.info(AppConfig.nodeName + ": Initializing EclipseStore with {} total disk shards, assigned shards: {}",
                 totalDiskShards, assignedShards);
 
         for (int shardId : assignedShards) {
@@ -87,7 +87,7 @@ public class EclipseStoreService implements IStoreService {
             shardLocks.put(shardId, new ReentrantLock());
             // Initialiser l'état dirty pour le shard
             dirtyShards.put(shardId, false);
-            logger.info("Successfully opened EclipseStore shard {}", shardId);
+            logger.info(AppConfig.nodeName + ": Successfully opened EclipseStore shard {}", shardId);
         }
 
         // Initialisation du thread de nettoyage
@@ -140,10 +140,10 @@ public class EclipseStoreService implements IStoreService {
                     if (count % 200 == 0) {
                         double avgMs = (flushDurationNs.sum() / (double) count) / 1_000_000.0;
                         double avgBatches = flushedShardBatches.sum() / (double) count;
-                        logger.debug("EclipseStore flush stats: executions={} avgDurationMs={} avgShardsPerFlush={}", count, String.format("%.3f", avgMs), String.format("%.2f", avgBatches));
+                        logger.debug(AppConfig.nodeName + ": EclipseStore flush stats: executions={} avgDurationMs={} avgShardsPerFlush={}", count, String.format("%.3f", avgMs), String.format("%.2f", avgBatches));
                     }
                 } catch (Exception e) {
-                    logger.error("Erreur lors du flush asynchrone des shards.", e);
+                    logger.error(AppConfig.nodeName + ": Erreur lors du flush asynchrone des shards.", e);
                 }
             }
         };
@@ -153,7 +153,7 @@ public class EclipseStoreService implements IStoreService {
                                                     flushIntervalMs,
                                                     flushIntervalMs,
                                                     TimeUnit.MILLISECONDS);
-        logger.info("Scheduler de flush EclipseStore démarré (Délai fixe: {} ms)", flushIntervalMs);
+        logger.info(AppConfig.nodeName + ": Scheduler de flush EclipseStore démarré (Délai fixe: {} ms)", flushIntervalMs);
     }
 
     private int flushDirtyShards() {

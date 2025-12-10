@@ -151,7 +151,7 @@ public class RocksDBService implements IStoreService {
                 AsyncRocksDbWriter writer = AsyncRocksDbWriter.createInstance(db, queueSize, shardId);
                 shardWriters.put(shardId, writer);
                 
-                logger.info("Successfully opened RocksDB shard {}", shardId);
+                logger.info(AppConfig.nodeName + ": Successfully opened RocksDB shard {}", shardId);
             }
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open RocksDB shards", e);

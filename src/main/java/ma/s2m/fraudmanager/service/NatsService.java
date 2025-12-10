@@ -116,7 +116,7 @@ public class NatsService {
             }
         }
 
-        logger.info("Started virtual‑thread executor for processing NATS messages and query dispatcher");
+        logger.info(AppConfig.nodeName + ": Started virtual‑thread executor for processing NATS messages and query dispatcher");
 
     }
 
