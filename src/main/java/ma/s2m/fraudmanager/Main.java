@@ -10,6 +10,8 @@ import ma.s2m.fraudmanager.service.FraudProcessor;
 import ma.s2m.fraudmanager.service.NatsService;
 import ma.s2m.fraudmanager.service.IStoreService;
 import ma.s2m.fraudmanager.util.Subject;
+import ma.s2m.fraudmanager.metrics.Metrics;
+import ma.s2m.fraudmanager.metrics.MetricsServer;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,12 +27,21 @@ import org.slf4j.LoggerFactory;
 public class Main {
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
     private static NatsService natsService;
+    private static boolean metricsStarted = false;
 
     public static void main(String[] args) {
         addShutdownHook();
 
         try {
             AppConfig config = new AppConfig(args);
+            if (AppConfig.metricsEnabled) {
+                var registry = MetricsServer.start(AppConfig.metricsPort, AppConfig.metricsPath);
+                if (registry != null) {
+                    registry.config().commonTags("app", "fraudmanager", "node", AppConfig.nodeName);
+                    Metrics.setRegistry(registry);
+                    metricsStarted = true;
+                }
+            }
             init(); // Initialisation des règles avant de démarrer le service NATS
             natsService = config.natsService();
             natsService.startConsumer(); // Démarre le consumer NATS et les workers
@@ -269,6 +280,9 @@ public class Main {
 
                 if (natsService != null && natsService.getStorageService() != null) {
                     natsService.getStorageService().close();
+                }
+                if (metricsStarted) {
+                    MetricsServer.stop();
                 }
 
             } catch (Exception e) {

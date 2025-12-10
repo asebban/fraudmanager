@@ -49,6 +49,7 @@ public class AppConfig {
     public static String natsQueryTopic = "";
     public static int storageMemoryShardCount = 4;
     public static long storageSubmitTimeoutMs = 100;
+    public static long storageFlushIntervalMs = 150;
     public static int storageDiskShardCount = 64;
     public static String configFile = "";
     public static String nodeName = "";
@@ -56,6 +57,9 @@ public class AppConfig {
     public static Boolean fraudManagerMultiNode = false;
     public static Boolean fraudManagerAlertStoringEnabled = false;
     public static String appStorageType = "rocksdb";
+    public static boolean metricsEnabled = false;
+    public static int metricsPort = 9464;
+    public static String metricsPath = "/metrics";
 
     public AppConfig(String[] args) throws Exception {
 
@@ -94,10 +98,14 @@ public class AppConfig {
         storageMemoryShardCount = Integer.parseInt(centralRepository.getProperty("storage.memory.shard.count", "4"));
         storageSubmitTimeoutMs = Long.parseLong(centralRepository.getProperty("storage.submit.timeout.ms", "100"));
         storageDiskShardCount = Integer.parseInt(centralRepository.getProperty("storage.disk.shard.count", "64"));
+        storageFlushIntervalMs = Long.parseLong(centralRepository.getProperty("storage.flush.interval.ms", "150"));
         nodeName = centralRepository.getProperty("node.name", "node-0");
         fraudManagerMultiNode = Boolean.parseBoolean(centralRepository.getProperty("fraudmanager.multinode", "false"));
         fraudManagerAlertStoringEnabled = Boolean.parseBoolean(centralRepository.getProperty("fraudmanager.alertstoring.enabled", "false"));
         appStorageType = centralRepository.getProperty("storage.type", "rocksdb");
+        metricsEnabled = Boolean.parseBoolean(centralRepository.getProperty("metrics.enabled", "false"));
+        metricsPort = Integer.parseInt(centralRepository.getProperty("metrics.port", "9464"));
+        metricsPath = centralRepository.getProperty("metrics.path", "/metrics");
 
         String shardsProp = centralRepository.getProperty("storage." + nodeName + ".shards", "0");
         if (shardsProp != null && !shardsProp.isEmpty()) {

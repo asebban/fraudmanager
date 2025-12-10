@@ -6,6 +6,10 @@ import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.functions.Function;
+import ma.s2m.fraudmanager.metrics.Metrics;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorage;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorageManager;
 import org.slf4j.Logger;
@@ -15,16 +19,15 @@ import java.io.File;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.Lock;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.LongAdder;
 
 public class EclipseStoreService implements IStoreService {
     private static final Logger logger = LoggerFactory.getLogger(EclipseStoreService.class);
-
-    // REMPLACEMENT : Remplacer le verrou global par une map de verrous par clé
-    // Note : Pour EclipseStore, le locking se fait idéalement au niveau du Manager/Shard
-    // Mais pour mimer le "lock par clé" demandé et garantir l'atomicité lors de l'accès au Map racine :
-    private final ConcurrentHashMap<String, ReentrantLock> keyLocks = new ConcurrentHashMap<>();
     
     // Pour simplifier et optimiser, nous allons utiliser un verrou par SHARD au lieu d'un verrou par clé
     // C'est la granularité la plus logique pour la persistance EclipseStore.
@@ -38,9 +41,27 @@ public class EclipseStoreService implements IStoreService {
     private final Map<Integer, EmbeddedStorageManager> shardManagers = new HashMap<>();
     private final Map<Integer, StorageRoot> shardRoots = new HashMap<>();
 
+    private final ConcurrentHashMap<Integer, Boolean> dirtyShards = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledFuture<?> flushTask;
+
+    // Fréquence de persistance (configurable via AppConfig)
+    private final long flushIntervalMs;    
+
+    // Metrics basiques
+    private final LongAdder flushCount = new LongAdder();
+    private final LongAdder flushedShardBatches = new LongAdder();
+    private final LongAdder flushDurationNs = new LongAdder();
+
+    // Micrometer meters (optional, when registry available)
+    private Counter flushCounter;
+    private Counter flushShardBatchesCounter;
+    private Timer flushTimer;
+
     public EclipseStoreService(String dbPath) {
         this.totalDiskShards = AppConfig.storageDiskShardCount;
         this.assignedShards = new ArrayList<>(AppConfig.storageShards);
+        this.flushIntervalMs = AppConfig.storageFlushIntervalMs;
 
         if (this.assignedShards.isEmpty()) {
             logger.warn("No shards assigned to this node, defaulting to shard 0");
@@ -64,10 +85,99 @@ public class EclipseStoreService implements IStoreService {
             shardRoots.put(shardId, root);
             // AJOUT: Initialisation du verrou par shard
             shardLocks.put(shardId, new ReentrantLock());
+            // Initialiser l'état dirty pour le shard
+            dirtyShards.put(shardId, false);
             logger.info("Successfully opened EclipseStore shard {}", shardId);
         }
+
+        // Initialisation du thread de nettoyage
+        startFlushScheduler();
+
+        // Register Micrometer meters if registry is present
+        tryRegisterMeters();
     }
 
+        private void tryRegisterMeters() {
+        MeterRegistry reg = Metrics.getRegistry();
+        if (reg == null) return;
+        flushCounter = Counter.builder("eclipsestore.flush.count")
+            .description("Number of async flush executions")
+            .tag("node", AppConfig.nodeName)
+            .register(reg);
+        flushShardBatchesCounter = Counter.builder("eclipsestore.flush.shards")
+            .description("Total shards flushed across all executions")
+            .tag("node", AppConfig.nodeName)
+            .register(reg);
+        flushTimer = Timer.builder("eclipsestore.flush.duration")
+            .description("Duration of async flush execution")
+            .publishPercentileHistogram()
+            .tag("node", AppConfig.nodeName)
+            .register(reg);
+        }
+
+    private void startFlushScheduler() {
+        Runnable flusher = new Runnable() {
+            @Override
+            public void run() {
+                long start = System.nanoTime();
+                try {
+                    int batches = flushDirtyShards();
+                    long dur = System.nanoTime() - start;
+                    flushCount.increment();
+                    flushedShardBatches.add(batches);
+                    flushDurationNs.add(dur);
+                    if (flushCounter != null) {
+                        flushCounter.increment();
+                    }
+                    if (flushShardBatchesCounter != null && batches > 0) {
+                        flushShardBatchesCounter.increment(batches);
+                    }
+                    if (flushTimer != null) {
+                        flushTimer.record(dur, java.util.concurrent.TimeUnit.NANOSECONDS);
+                    }
+                    // Log léger toutes les ~200 exécutions
+                    long count = flushCount.sum();
+                    if (count % 200 == 0) {
+                        double avgMs = (flushDurationNs.sum() / (double) count) / 1_000_000.0;
+                        double avgBatches = flushedShardBatches.sum() / (double) count;
+                        logger.debug("EclipseStore flush stats: executions={} avgDurationMs={} avgShardsPerFlush={}", count, String.format("%.3f", avgMs), String.format("%.2f", avgBatches));
+                    }
+                } catch (Exception e) {
+                    logger.error("Erreur lors du flush asynchrone des shards.", e);
+                }
+            }
+        };
+        
+        // Planifie la tâche de flush avec un délai fixe afin d'éviter l'effet rattrapage
+        flushTask = scheduler.scheduleWithFixedDelay(flusher,
+                                                    flushIntervalMs,
+                                                    flushIntervalMs,
+                                                    TimeUnit.MILLISECONDS);
+        logger.info("Scheduler de flush EclipseStore démarré (Délai fixe: {} ms)", flushIntervalMs);
+    }
+
+    private int flushDirtyShards() {
+        int flushed = 0;
+        for (int shardId : assignedShards) {
+            // Vérifie si le shard a été modifié depuis le dernier flush
+            if (Boolean.TRUE.equals(dirtyShards.get(shardId))) {
+                ReentrantLock shardLock = getLockForShard(shardId);
+                EmbeddedStorageManager manager = getManagerForShard(shardId);
+                
+                if (manager != null && shardLock != null) {
+                    shardLock.lock();
+                    try {
+                        manager.store(shardRoots.get(shardId).getAllMaps()); // Commit toutes les modifications en mémoire
+                        dirtyShards.put(shardId, false); // Réinitialise l'état
+                        flushed++;
+                    } finally {
+                        shardLock.unlock();
+                    }
+                }
+            }
+        }
+        return flushed;
+    }
     // -----------------------------------------------------------------
     // Data Root Structure
     // -----------------------------------------------------------------
@@ -102,11 +212,6 @@ public class EclipseStoreService implements IStoreService {
         }
     }
 
-    private Lock getKeyLock(String key) {
-        // utilise computeIfAbsent pour créer le verrou uniquement s'il n'existe pas
-        return keyLocks.computeIfAbsent(key, k -> new ReentrantLock());
-    }
-    
     private StorageRoot getRootForShard(int shardId) {
         return shardRoots.get(shardId);
     }
@@ -178,7 +283,8 @@ public class EclipseStoreService implements IStoreService {
             try {
                 Map<String, Object> map = root.getMapForKey(key);
                 map.put(key, measurments);
-                manager.store(map);
+                // Passage à l'écriture asynchrone pour être cohérent avec les autres méthodes
+                dirtyShards.put(shardId, true);
             } finally {
                 shardLock.unlock();
             }
@@ -188,24 +294,18 @@ public class EclipseStoreService implements IStoreService {
     @Override
     public void setRecordHashMapByKey(String key, RecordHashMap recordHashMap) {
         int shardId = Function.calculateShardId(key, totalDiskShards);
-        Lock keyLock = getKeyLock(key);
         StorageRoot root = getRootForShard(shardId);
         EmbeddedStorageManager manager = getManagerForShard(shardId);
         ReentrantLock shardLock = getLockForShard(shardId);
         
         if (root != null && manager != null && shardLock != null) {
-            keyLock.lock();
+            shardLock.lock(); 
             try {
                 Map<String, Object> map = root.getMapForKey(key);
                 map.put(key, recordHashMap);
-                shardLock.lock(); 
-                try {
-                    manager.store(map); // Commit sur le disque
-                } finally {
-                    shardLock.unlock();
-                }
+                dirtyShards.put(shardId, true);
             } finally {
-                keyLock.unlock();
+                shardLock.unlock();
             }
         }
     }
@@ -215,22 +315,16 @@ public class EclipseStoreService implements IStoreService {
         int shardId = Function.calculateShardId(key, totalDiskShards);
         StorageRoot root = getRootForShard(shardId);
         EmbeddedStorageManager manager = getManagerForShard(shardId);
-        Lock keyLock = getKeyLock(key);
         ReentrantLock shardLock = getLockForShard(shardId);
         
         if (root != null && manager != null && shardLock != null) {
-            keyLock.lock();
+            shardLock.lock(); 
             try {
                 Map<String, Object> map = root.getMapForKey(key);
                 map.put(key, measurment);
-                shardLock.lock(); 
-                try {
-                    manager.store(map); // Commit sur le disque
-                } finally {
-                    shardLock.unlock();
-                }
+                dirtyShards.put(shardId, true);
             } finally {
-                keyLock.unlock();
+                shardLock.unlock();
             }
         }
     }
@@ -238,56 +332,43 @@ public class EclipseStoreService implements IStoreService {
     @Override
     public void setWrapperMeasurmentByKey(String key, WrapperMeasurment wrapperMeasurment) {
         int shardId = Function.calculateShardId(key, totalDiskShards);
-        Lock keyLock = getKeyLock(key);
         StorageRoot root = getRootForShard(shardId);
         EmbeddedStorageManager manager = getManagerForShard(shardId);
         ReentrantLock shardLock = getLockForShard(shardId);
         
         if (root != null && manager != null && shardLock != null) {
-            keyLock.lock();
+            shardLock.lock(); 
             try {
                 Map<String, Object> map = root.getMapForKey(key);
                 map.put(key, wrapperMeasurment);
-                shardLock.lock(); 
-                try {
-                    manager.store(map); // Commit sur le disque
-                } finally {
-                    shardLock.unlock();
-                }
+                dirtyShards.put(shardId, true);
             } finally {
-                keyLock.unlock();
+                shardLock.unlock();
             }
         }
     }
 
-    @Override
+    // La méthode flushBatch() reste un no-op ou peut appeler flushDirtyShards() immédiatement    @Override
     public void flushBatch() {
-        // La gestion des locks par shard assure qu'un seul thread modifie le shard à la fois.
-        // La méthode store() est appelée dans chaque setter, donc flushBatch reste un no-op.
+        flushDirtyShards();
     }
 
     @Override
     public void deleteKey(String key) {
         int shardId = Function.calculateShardId(key, totalDiskShards);
         StorageRoot root = getRootForShard(shardId);
-        Lock keyLock = getKeyLock(key);
         EmbeddedStorageManager manager = getManagerForShard(shardId);
         ReentrantLock shardLock = getLockForShard(shardId);
         
         if (root != null && manager != null && shardLock != null) {
-            keyLock.lock();
+            shardLock.lock(); 
             try {
                 Map<String, Object> map = root.getMapForKey(key);
                 if (map.remove(key) != null) {
-                    shardLock.lock();
-                    try {
-                        manager.store(map);
-                    } finally {
-                        shardLock.unlock();
-                    }
+                    dirtyShards.put(shardId, true);
                 }
             } finally {
-                keyLock.unlock();
+                shardLock.unlock();
             }
         }
     }
@@ -338,9 +419,50 @@ public class EclipseStoreService implements IStoreService {
 
     @Override
     public void close() {
+        // Tentative de flush final des shards modifiés avant arrêt
+        try {
+            flushDirtyShards();
+        } catch (Exception e) {
+            logger.warn("Flush final avant arrêt a échoué", e);
+        }
+
+        if (flushTask != null) {
+            flushTask.cancel(false); // Arrêter la planification sans interrompre la tâche en cours
+        }
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                logger.warn("Le scheduler de flush ne s'est pas terminé dans le délai imparti. Forcing shutdown now.");
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            scheduler.shutdownNow();
+        }
+
+        // Double sécurité: si des writes se sont produits après le dernier flush, refait un flush par shard
+        for (int shardId : assignedShards) {
+            if (Boolean.TRUE.equals(dirtyShards.get(shardId))) {
+                ReentrantLock shardLock = getLockForShard(shardId);
+                EmbeddedStorageManager manager = getManagerForShard(shardId);
+                if (manager != null && shardLock != null) {
+                    shardLock.lock();
+                    try {
+                        manager.store(shardRoots.get(shardId).getAllMaps());
+                        dirtyShards.put(shardId, false);
+                    } finally {
+                        shardLock.unlock();
+                    }
+                }
+            }
+        }
+
         for (EmbeddedStorageManager manager : shardManagers.values()) {
             manager.shutdown();
         }
-        logger.info("Closed all EclipseStore shards");
+        double avgMs = (flushCount.sum() == 0) ? 0.0 : (flushDurationNs.sum() / (double) flushCount.sum()) / 1_000_000.0;
+        double avgBatches = (flushCount.sum() == 0) ? 0.0 : flushedShardBatches.sum() / (double) flushCount.sum();
+        logger.info("Closed all EclipseStore shards. Flush stats: executions={} avgDurationMs={} avgShardsPerFlush={}",
+                flushCount.sum(), String.format("%.3f", avgMs), String.format("%.2f", avgBatches));
     }
 }
