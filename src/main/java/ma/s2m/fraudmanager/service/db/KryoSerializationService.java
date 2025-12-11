@@ -1,4 +1,4 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.db;
 
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
@@ -28,6 +28,10 @@ public class KryoSerializationService {
     private static final ThreadLocal<Kryo> kryoThreadLocal = ThreadLocal
             .withInitial(KryoSerializationService::createKryo);
 
+    // ThreadLocal for Output buffer to avoid reallocation (GC reduction)
+    private static final ThreadLocal<Output> outputThreadLocal = ThreadLocal
+            .withInitial(() -> new Output(4096, -1)); // 4KB initial, unlimited max
+
     /**
      * Gets or creates a Kryo instance for the current thread
      */
@@ -43,7 +47,8 @@ public class KryoSerializationService {
 
         // Configuration pour la compatibilité
         kryo.setRegistrationRequired(false);
-        kryo.setReferences(true);
+        // Default to false for performance, but we toggle it dynamically
+        kryo.setReferences(false);
 
         // Stratégie d'instanciation pour les objets sans constructeur par défaut
         kryo.setInstantiatorStrategy(new DefaultInstantiatorStrategy(new StdInstantiatorStrategy()));
@@ -95,15 +100,15 @@ public class KryoSerializationService {
             return null;
         }
 
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                Output output = new Output(baos)) {
-
-            Kryo kryo = getKryo();
+        Kryo kryo = getKryo();
+        Output output = outputThreadLocal.get();
+        
+        try {
+            output.reset(); // Reuse buffer
+            // Disable references for writing to avoid IdentityObjectIntMap overhead
+            kryo.setReferences(false);
             kryo.writeObject(output, obj);
-            output.flush();
-
-            return baos.toByteArray();
-
+            return output.toBytes();
         } catch (Exception e) {
             logger.error("Error serializing object of type {}: {}", obj.getClass().getSimpleName(), e.getMessage(), e);
             throw new RuntimeException("Kryo serialization failed", e);
@@ -118,15 +123,23 @@ public class KryoSerializationService {
             return null;
         }
 
-        try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
-                Input input = new Input(bais)) {
-
-            Kryo kryo = getKryo();
+        Kryo kryo = getKryo();
+        
+        // Try with references=false (Fast path for new data)
+        try {
+            Input input = new Input(data);
+            kryo.setReferences(false);
             return kryo.readObject(input, clazz);
-
         } catch (Exception e) {
-            logger.error("Error deserializing data to type {}: {}", clazz.getSimpleName(), e.getMessage(), e);
-            throw new RuntimeException("Kryo deserialization failed", e);
+            // Fallback: Try with references=true (Slow path for legacy data)
+            try {
+                Input input = new Input(data);
+                kryo.setReferences(true);
+                return kryo.readObject(input, clazz);
+            } catch (Exception ex) {
+                logger.error("Error deserializing data to type {}: {}", clazz.getSimpleName(), ex.getMessage(), ex);
+                throw new RuntimeException("Kryo deserialization failed", ex);
+            }
         }
     }
 
@@ -138,15 +151,14 @@ public class KryoSerializationService {
             return null;
         }
 
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                Output output = new Output(baos)) {
+        Kryo kryo = getKryo();
+        Output output = outputThreadLocal.get();
 
-            Kryo kryo = getKryo();
+        try {
+            output.reset();
+            kryo.setReferences(false);
             kryo.writeObject(output, map);
-            output.flush();
-
-            return baos.toByteArray();
-
+            return output.toBytes();
         } catch (Exception e) {
             logger.error("Error serializing map: {}", e.getMessage(), e);
             throw new RuntimeException("Kryo map serialization failed", e);
@@ -162,17 +174,21 @@ public class KryoSerializationService {
             return new HashMap<>();
         }
 
-        try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
-                Input input = new Input(bais)) {
+        Kryo kryo = getKryo();
 
-            Kryo kryo = getKryo();
-            Object result = kryo.readObject(input, HashMap.class);
-
-            return (Map<String, Measurment>) result;
-
+        try {
+            Input input = new Input(data);
+            kryo.setReferences(false);
+            return (Map<String, Measurment>) kryo.readObject(input, HashMap.class);
         } catch (Exception e) {
-            logger.error("Error deserializing string-measurment map: {}", e.getMessage(), e);
-            throw new RuntimeException("Kryo map deserialization failed", e);
+            try {
+                Input input = new Input(data);
+                kryo.setReferences(true);
+                return (Map<String, Measurment>) kryo.readObject(input, HashMap.class);
+            } catch (Exception ex) {
+                logger.error("Error deserializing string-measurment map: {}", ex.getMessage(), ex);
+                throw new RuntimeException("Kryo map deserialization failed", ex);
+            }
         }
     }
 
@@ -185,17 +201,21 @@ public class KryoSerializationService {
             return new HashMap<>();
         }
 
-        try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
-                Input input = new Input(bais)) {
+        Kryo kryo = getKryo();
 
-            Kryo kryo = getKryo();
-            Object result = kryo.readObject(input, HashMap.class);
-
-            return (Map<Long, Measurment>) result;
-
+        try {
+            Input input = new Input(data);
+            kryo.setReferences(false);
+            return (Map<Long, Measurment>) kryo.readObject(input, HashMap.class);
         } catch (Exception e) {
-            logger.error("Error deserializing long-measurment map: {}", e.getMessage(), e);
-            throw new RuntimeException("Kryo map deserialization failed", e);
+            try {
+                Input input = new Input(data);
+                kryo.setReferences(true);
+                return (Map<Long, Measurment>) kryo.readObject(input, HashMap.class);
+            } catch (Exception ex) {
+                logger.error("Error deserializing long-measurment map: {}", ex.getMessage(), ex);
+                throw new RuntimeException("Kryo map deserialization failed", ex);
+            }
         }
     }
 
@@ -205,5 +225,6 @@ public class KryoSerializationService {
      */
     public static void cleanup() {
         kryoThreadLocal.remove();
+        outputThreadLocal.remove();
     }
 }

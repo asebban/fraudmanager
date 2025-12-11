@@ -1,4 +1,4 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.thirdparties;
 
 public class ExternalSystem implements IExternalSystem<String, Boolean> {
 

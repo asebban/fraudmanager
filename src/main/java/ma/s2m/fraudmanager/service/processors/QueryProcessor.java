@@ -1,4 +1,4 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.processors;
 
 import java.io.IOException;
 import java.util.List;
@@ -16,6 +16,7 @@ import ma.s2m.auth.query.Indicator;
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.MeasurmentRecord;
 import ma.s2m.fraudmanager.model.RecordHashMap;
+import ma.s2m.fraudmanager.service.db.IStoreService;
 import ma.s2m.serializer.SerializationManager;
 
 public class QueryProcessor {

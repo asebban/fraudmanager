@@ -1,4 +1,4 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.processors;
 
 import ma.medtech.droolbuilder.messaging.IMessageSender;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
@@ -24,6 +24,8 @@ import ma.s2m.fraudmanager.model.RecordsDelta;
 import ma.s2m.fraudmanager.model.TrxEntry;
 import ma.s2m.fraudmanager.model.TrxOrAlertEvent;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
+import ma.s2m.fraudmanager.service.db.IStoreService;
+import ma.s2m.fraudmanager.service.thirdparties.ExternalSystem;
 import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.functions.Function;
 import ma.s2m.serializer.SerializationManager;

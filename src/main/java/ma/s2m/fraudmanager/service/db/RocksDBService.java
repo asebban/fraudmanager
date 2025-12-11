@@ -1,12 +1,18 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.db;
 
 import ma.medtech.droolbuilder.rules.Subject;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
+import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.fraudmanager.util.RetryUtil;
 import ma.s2m.functions.Function;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import org.rocksdb.*;
 import org.rocksdb.util.SizeUnit;
@@ -69,6 +75,19 @@ public class RocksDBService implements IStoreService {
 
     // Shared batch accumulator for WrapperMeasurment
     private final Map<String, WrapperMeasurment> wrapperBatchAccumulator = new ConcurrentHashMap<>();
+
+    // Batch configuration
+    private static final int BATCH_AUTO_FLUSH_THRESHOLD = 5000;
+    private volatile long lastFlushTime = System.currentTimeMillis();
+
+    // Metrics
+    private final MeterRegistry registry = new SimpleMeterRegistry();
+    private final Timer flushTimer = Timer.builder("rocksdb.flush.time")
+            .description("Time taken to flush RocksDB batch")
+            .register(registry);
+    private final Counter flushCounter = Counter.builder("rocksdb.flush.count")
+            .description("Number of RocksDB batch flushes")
+            .register(registry);
 
     public RocksDBService(String dbPath, int queueSize) {
         // -----------------------------------------------------------------
@@ -188,6 +207,8 @@ public class RocksDBService implements IStoreService {
     // -----------------------------------------------------------------
     public Map<Long, Measurment> getMeasurments(String key) {
         return RetryUtil.retry(() -> {
+            long startTotal = System.currentTimeMillis();
+            long startDb = System.currentTimeMillis();
             try {
                 int shardId = Function.calculateShardId(key, totalDiskShards);
                 RocksDB db = shardedDbs.get(shardId);
@@ -197,13 +218,32 @@ public class RocksDBService implements IStoreService {
                 }
                 ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
                 byte[] value = db.get(cf, toBytes(key));
+                long endDb = System.currentTimeMillis();
+
                 if (value == null) {
-                    logger.debug("Key {} not found, returning empty map", key);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("getMeasurments key={} : dbTime={} ms, value not found", key, (endDb - startDb));
+                    }
                     return new HashMap<>();
                 }
-                return mapper.readValue(value, MEAS_MAP_TYPE);
+
+                long startDeserialize = System.currentTimeMillis();
+                Map<Long, Measurment> result = mapper.readValue(value, MEAS_MAP_TYPE);
+                long endTotal = System.currentTimeMillis();
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug(
+                            "getMeasurments key={} : dbTime={} ms, deserTime={} ms, totalTime={} ms, size={}",
+                            key,
+                            (endDb - startDb),
+                            (endTotal - startDeserialize),
+                            (endTotal - startTotal),
+                            result != null ? result.size() : 0);
+                }
+                return result;
             } catch (Exception e) {
-                logger.error("Error while getting measurments for key: {}", key, e);
+                long endTotal = System.currentTimeMillis();
+                logger.error("Error while getting measurments for key {} (totalTime={} ms)", key, (endTotal - startTotal), e);
                 return new HashMap<>();
             }
         });
@@ -213,6 +253,8 @@ public class RocksDBService implements IStoreService {
      * Get a RecordHashMap from RocksDB by key
      */
     public RecordHashMap getRecordHashMapByKey(String key) {
+        long startTotal = System.currentTimeMillis();
+        long startDb = System.currentTimeMillis();
         try {
             int shardId = Function.calculateShardId(key, totalDiskShards);
             RocksDB db = shardedDbs.get(shardId);
@@ -222,16 +264,39 @@ public class RocksDBService implements IStoreService {
             }
             ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
-            if (v != null) {
-                return KryoSerializationService.deserialize(v, RecordHashMap.class);
+            long endDb = System.currentTimeMillis();
+
+            if (v == null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("getRecordHashMapByKey key={} : dbTime={} ms, value not found", key, (endDb - startDb));
+                }
+                return null;
             }
+
+            long startDeserialize = System.currentTimeMillis();
+            RecordHashMap result = KryoSerializationService.deserialize(v, RecordHashMap.class);
+            long endTotal = System.currentTimeMillis();
+
+            if (logger.isDebugEnabled()) {
+                logger.debug(
+                        "getRecordHashMapByKey key={} : dbTime={} ms, deserTime={} ms, totalTime={} ms",
+                        key,
+                        (endDb - startDb),
+                        (endTotal - startDeserialize),
+                        (endTotal - startTotal));
+            }
+            return result;
         } catch (Exception e) {
-            logger.error("Error retrieving RecordHashMap from RocksDB for key {}: {}", key, e.getMessage(), e);
+            long endTotal = System.currentTimeMillis();
+            logger.error("Error retrieving RecordHashMap from RocksDB for key {} (totalTime={} ms): {}", key,
+                    (endTotal - startTotal), e.getMessage(), e);
         }
         return null;
     }
 
     public Measurment getMeasurmentByKey(String key) {
+        long startTotal = System.currentTimeMillis();
+        long startDb = System.currentTimeMillis();
         try {
             int shardId = Function.calculateShardId(key, totalDiskShards);
             RocksDB db = shardedDbs.get(shardId);
@@ -241,16 +306,39 @@ public class RocksDBService implements IStoreService {
             }
             ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
-            if (v != null) {
-                return KryoSerializationService.deserialize(v, Measurment.class);
+            long endDb = System.currentTimeMillis();
+
+            if (v == null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("getMeasurmentByKey key={} : dbTime={} ms, value not found", key, (endDb - startDb));
+                }
+                return null;
             }
+
+            long startDeserialize = System.currentTimeMillis();
+            Measurment result = KryoSerializationService.deserialize(v, Measurment.class);
+            long endTotal = System.currentTimeMillis();
+
+            if (logger.isDebugEnabled()) {
+                logger.debug(
+                        "getMeasurmentByKey key={} : dbTime={} ms, deserTime={} ms, totalTime={} ms",
+                        key,
+                        (endDb - startDb),
+                        (endTotal - startDeserialize),
+                        (endTotal - startTotal));
+            }
+            return result;
         } catch (Exception e) {
-            logger.error("Error retrieving Measurment from RocksDB for key {}: {}", key, e.getMessage(), e);
+            long endTotal = System.currentTimeMillis();
+            logger.error("Error retrieving Measurment from RocksDB for key {} (totalTime={} ms): {}", key,
+                    (endTotal - startTotal), e.getMessage(), e);
         }
         return null;
     }
 
     public WrapperMeasurment getWrapperMeasurmentByKey(String key) {
+        long startTotal = System.currentTimeMillis();
+        long startDb = System.currentTimeMillis();
         try {
             int shardId = Function.calculateShardId(key, totalDiskShards);
             RocksDB db = shardedDbs.get(shardId);
@@ -260,11 +348,33 @@ public class RocksDBService implements IStoreService {
             }
             ColumnFamilyHandle cf = getCFHandleForKey(shardId, key);
             byte[] v = db.get(cf, toBytes(key));
-            if (v != null) {
-                return KryoSerializationService.deserialize(v, WrapperMeasurment.class);
+            long endDb = System.currentTimeMillis();
+
+            if (v == null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("getWrapperMeasurmentByKey key={} : dbTime={} ms, value not found", key,
+                            (endDb - startDb));
+                }
+                return null;
             }
+
+            long startDeserialize = System.currentTimeMillis();
+            WrapperMeasurment result = KryoSerializationService.deserialize(v, WrapperMeasurment.class);
+            long endTotal = System.currentTimeMillis();
+
+            if (logger.isDebugEnabled()) {
+                logger.debug(
+                        "getWrapperMeasurmentByKey key={} : dbTime={} ms, deserTime={} ms, totalTime={} ms",
+                        key,
+                        (endDb - startDb),
+                        (endTotal - startDeserialize),
+                        (endTotal - startTotal));
+            }
+            return result;
         } catch (Exception e) {
-            logger.error("Error retrieving WrapperMeasurment from RocksDB for key {}: {}", key, e.getMessage(), e);
+            long endTotal = System.currentTimeMillis();
+            logger.error("Error retrieving WrapperMeasurment from RocksDB for key {} (totalTime={} ms): {}", key,
+                    (endTotal - startTotal), e.getMessage(), e);
         }
         return null;
     }
@@ -293,19 +403,26 @@ public class RocksDBService implements IStoreService {
     public void setRecordHashMapByKey(String key, RecordHashMap recordHashMap) {
         // Accumulate in shared batch instead of saving immediately
         recordHashMapBatchAccumulator.put(key, recordHashMap);
-        logger.debug("Accumulated recordHashMap for key {} in batch", key);
+        checkAndFlushBatch();
     }
 
     public void setMeasurmentByKey(String key, Measurment measurment) {
         // Accumulate in shared batch instead of saving immediately
         batchAccumulator.put(key, measurment);
-        logger.debug("Accumulated measurment for key {} in batch", key);
+        checkAndFlushBatch();
     }
 
     public void setWrapperMeasurmentByKey(String key, WrapperMeasurment wrapperMeasurment) {
         // Accumulate in shared batch instead of saving immediately
         wrapperBatchAccumulator.put(key, wrapperMeasurment);
-        logger.debug("Accumulated wrapper measurment for key {} in batch", key);
+        checkAndFlushBatch();
+    }
+
+    private void checkAndFlushBatch() {
+        int totalSize = batchAccumulator.size() + recordHashMapBatchAccumulator.size() + wrapperBatchAccumulator.size();
+        if (totalSize >= BATCH_AUTO_FLUSH_THRESHOLD || (System.currentTimeMillis() - lastFlushTime > 100)) {
+            flushBatch();
+        }
     }
 
     /**
@@ -320,15 +437,16 @@ public class RocksDBService implements IStoreService {
         return key;
     }
 
-    /**
-     * Flushes all accumulated writes in the shared batch.
-     * This is thread-safe and ensures all accumulated writes from all threads are persisted.
-     * Call this at the end of processing a NATS message.
-     */
     public void flushBatch() {
         if (batchAccumulator.isEmpty() && wrapperBatchAccumulator.isEmpty() && recordHashMapBatchAccumulator.isEmpty()) {
             return;
         }
+
+        // Update last flush time
+        lastFlushTime = System.currentTimeMillis();
+        flushCounter.increment();
+
+        Timer.Sample sample = Timer.start(registry);
 
         long start = System.currentTimeMillis();
         int submitted = 0;
@@ -339,7 +457,7 @@ public class RocksDBService implements IStoreService {
             // Drain the map to avoid concurrent modification issues and double flushing
             // We iterate and remove keys one by one or copy the whole map
             // Copying is safer for iteration
-            Map<String, Measurment> batchSnapshot = new HashMap<>();
+            Map<String, Measurment> batchSnapshot = new HashMap<>(batchAccumulator.size());
             Iterator<Map.Entry<String, Measurment>> it = batchAccumulator.entrySet().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, Measurment> entry = it.next();
@@ -492,6 +610,7 @@ public class RocksDBService implements IStoreService {
         }
 
         long end = System.currentTimeMillis();
+        sample.stop(flushTimer);
         logger.debug("Time {} ms : flushBatch {} keys ({} submitted, {} failed)", 
                     (end - start), submitted + failed, submitted, failed);
     }

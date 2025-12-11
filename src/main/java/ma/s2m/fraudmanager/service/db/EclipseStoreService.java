@@ -1,10 +1,11 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.db;
 
 import ma.medtech.droolbuilder.rules.Subject;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.RecordHashMap;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
+import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.functions.Function;
 import ma.s2m.fraudmanager.metrics.Metrics;
 import io.micrometer.core.instrument.Counter;

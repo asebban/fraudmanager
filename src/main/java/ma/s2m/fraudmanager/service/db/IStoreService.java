@@ -1,4 +1,4 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.db;
 
 import ma.s2m.fraudmanager.model.Measurment;
 import ma.s2m.fraudmanager.model.RecordHashMap;

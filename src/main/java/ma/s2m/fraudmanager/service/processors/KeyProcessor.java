@@ -1,10 +1,12 @@
-package ma.s2m.fraudmanager.service;
+package ma.s2m.fraudmanager.service.processors;
 
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
+
+import ma.s2m.fraudmanager.service.db.IStoreService;
 
 public class KeyProcessor {
 

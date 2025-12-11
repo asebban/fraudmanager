@@ -1,12 +1,12 @@
 package ma.s2m.fraudmanager.config;
 
 import ma.medtech.droolbuilder.rules.RuleDefinition;
-import ma.s2m.fraudmanager.service.EclipseStoreService;
-import ma.s2m.fraudmanager.service.FraudProcessor;
-import ma.s2m.fraudmanager.service.IStoreService;
 import ma.s2m.fraudmanager.service.NatsService;
-import ma.s2m.fraudmanager.service.QueryProcessor;
-import ma.s2m.fraudmanager.service.RocksDBService;
+import ma.s2m.fraudmanager.service.db.EclipseStoreService;
+import ma.s2m.fraudmanager.service.db.IStoreService;
+import ma.s2m.fraudmanager.service.db.RocksDBService;
+import ma.s2m.fraudmanager.service.processors.FraudProcessor;
+import ma.s2m.fraudmanager.service.processors.QueryProcessor;
 import ma.s2m.functions.Function;
 import ma.s2m.repository.IRepository;
 import ma.s2m.repository.PropertiesRepository;

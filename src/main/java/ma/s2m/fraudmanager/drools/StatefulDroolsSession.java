@@ -19,7 +19,7 @@ import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.drools.listeners.RuleProfiler;
 import ma.s2m.fraudmanager.model.Measurment;
-import ma.s2m.fraudmanager.service.FraudProcessor;
+import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 
 final class StatefulDroolsSession implements DroolsSession {
     private final KieSession ks;

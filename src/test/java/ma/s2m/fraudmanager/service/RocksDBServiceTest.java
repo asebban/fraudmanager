@@ -1,6 +1,8 @@
 package ma.s2m.fraudmanager.service;
 
 import ma.s2m.fraudmanager.config.AppConfig;
+import ma.s2m.fraudmanager.service.db.RocksDBService;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

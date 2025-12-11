@@ -4,6 +4,9 @@ import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
 import ma.s2m.auth.query.FraudQueryResponse;
 import ma.s2m.fraudmanager.config.AppConfig;
+import ma.s2m.fraudmanager.service.db.IStoreService;
+import ma.s2m.fraudmanager.service.processors.FraudProcessor;
+import ma.s2m.fraudmanager.service.processors.QueryProcessor;
 import ma.s2m.serializer.SerializationManager;
 
 import org.slf4j.Logger;
