@@ -154,7 +154,7 @@ public class EclipseStoreService implements IStoreService {
                                                     flushIntervalMs,
                                                     flushIntervalMs,
                                                     TimeUnit.MILLISECONDS);
-        logger.info(AppConfig.nodeName + ": Scheduler de flush EclipseStore démarré (Délai fixe: {} ms)", flushIntervalMs);
+        logger.info(AppConfig.nodeName + ": Flush scheduler EclipseStore started (Fixed delay): {} ms)", flushIntervalMs);
     }
 
     private int flushDirtyShards() {
@@ -424,7 +424,7 @@ public class EclipseStoreService implements IStoreService {
         try {
             flushDirtyShards();
         } catch (Exception e) {
-            logger.warn("Flush final avant arrêt a échoué", e);
+            logger.warn("Final flush before shutdown failed", e);
         }
 
         if (flushTask != null) {
@@ -433,7 +433,7 @@ public class EclipseStoreService implements IStoreService {
         scheduler.shutdown();
         try {
             if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                logger.warn("Le scheduler de flush ne s'est pas terminé dans le délai imparti. Forcing shutdown now.");
+                logger.warn("The flush scheduler did not terminate within the allotted time. Forcing shutdown now.");
                 scheduler.shutdownNow();
             }
         } catch (InterruptedException ie) {
