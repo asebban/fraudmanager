@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * RocksDB service with asynchronous writes.
  * - Writes are delegated to a background writer thread.
- * - Objects are serialized inside the writer using {@link KryoSerializationService}.
+ * - Objects are serialized inside the writer using {@link FstSerializationService}.
  * - Uses a column family per subject (CARD, MERCHANT, CUSTOM) and a
  *   prefix‑rich key format: <subject>[:<custom>]:<key>:<windowSize>.
  */
@@ -274,7 +274,7 @@ public class RocksDBService implements IStoreService {
             }
 
             long startDeserialize = System.currentTimeMillis();
-            RecordHashMap result = KryoSerializationService.deserialize(v, RecordHashMap.class);
+            RecordHashMap result = FstSerializationService.deserialize(v, RecordHashMap.class);
             long endTotal = System.currentTimeMillis();
 
             if (logger.isDebugEnabled()) {
@@ -316,7 +316,7 @@ public class RocksDBService implements IStoreService {
             }
 
             long startDeserialize = System.currentTimeMillis();
-            Measurment result = KryoSerializationService.deserialize(v, Measurment.class);
+            Measurment result = FstSerializationService.deserialize(v, Measurment.class);
             long endTotal = System.currentTimeMillis();
 
             if (logger.isDebugEnabled()) {
@@ -359,7 +359,7 @@ public class RocksDBService implements IStoreService {
             }
 
             long startDeserialize = System.currentTimeMillis();
-            WrapperMeasurment result = KryoSerializationService.deserialize(v, WrapperMeasurment.class);
+            WrapperMeasurment result = FstSerializationService.deserialize(v, WrapperMeasurment.class);
             long endTotal = System.currentTimeMillis();
 
             if (logger.isDebugEnabled()) {
@@ -832,7 +832,7 @@ public class RocksDBService implements IStoreService {
             }
             // fallback direct write
             try (WriteBatch batch = new WriteBatch()) {
-                byte[] serialized = KryoSerializationService.serialize(valueObj);
+                byte[] serialized = FstSerializationService.serialize(valueObj);
                 batch.put(cf, key, serialized);
                 db.write(writeOptions, batch);
                 return true;
@@ -891,11 +891,11 @@ public class RocksDBService implements IStoreService {
             switch (req.type) {
                 case PUT_BINARY -> batch.put(req.key, req.value);
                 case PUT_OBJECT -> {
-                    byte[] ser = KryoSerializationService.serialize(req.objectValue);
+                    byte[] ser = FstSerializationService.serialize(req.objectValue);
                     batch.put(req.key, ser);
                 }
                 case PUT_OBJECT_WITH_CF -> {
-                    byte[] ser = KryoSerializationService.serialize(req.objectValue);
+                    byte[] ser = FstSerializationService.serialize(req.objectValue);
                     batch.put(req.cfHandle, req.key, ser);
                 }
                 case DEL -> batch.delete(req.cfHandle, req.key);
