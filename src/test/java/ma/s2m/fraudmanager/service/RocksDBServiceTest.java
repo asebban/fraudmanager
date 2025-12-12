@@ -1,7 +1,7 @@
 package ma.s2m.fraudmanager.service;
 
-import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.service.db.RocksDBService;
+import ma.s2m.fraudmanager.service.db.StorageConfig;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -21,16 +22,19 @@ class RocksDBServiceTest {
     Path tempDir;
 
     private RocksDBService rocksDBService;
+    private StorageConfig storageConfig;
 
     @BeforeEach
     void setUp() {
-        // Configure AppConfig to use the temp directory and a single shard
-        AppConfig.storageDiskShardCount = 1;
-        AppConfig.storageShards = new ArrayList<>();
-        AppConfig.storageShards.add(0);
-        AppConfig.nodeName = "test-node";
-        AppConfig.storageMemoryShardCount = 1;
-        AppConfig.storageSubmitTimeoutMs = 100;
+        storageConfig = new StorageConfig(
+                1,
+                new ArrayList<>(List.of(0)),
+                "test-node",
+                1000L,
+                100L,
+                1,
+                null
+        );
     }
 
     @AfterEach
@@ -46,7 +50,7 @@ class RocksDBServiceTest {
         
         // Initialize service - this should create the directory
         assertDoesNotThrow(() -> {
-            rocksDBService = new RocksDBService(dbPath, 100);
+            rocksDBService = new RocksDBService(dbPath, 100, storageConfig);
         });
 
         // Verify directory exists
@@ -58,7 +62,7 @@ class RocksDBServiceTest {
     @Test
     void testCrossThreadBatchFlushing() throws Exception {
         String dbPath = tempDir.toString();
-        rocksDBService = new RocksDBService(dbPath, 100);
+        rocksDBService = new RocksDBService(dbPath, 100, storageConfig);
 
         String key = "card:12345:1000";
         ma.s2m.fraudmanager.model.Measurment m = new ma.s2m.fraudmanager.model.Measurment();

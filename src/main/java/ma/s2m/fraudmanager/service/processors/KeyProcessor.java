@@ -47,6 +47,7 @@ public class KeyProcessor {
                     
                 } catch (Exception e) {
                     logger.error("Error processing data for key: {}", dataKey, e);
+                    e.printStackTrace();
                     return null;
                 } finally {
                     // Toujours libérer le verrou

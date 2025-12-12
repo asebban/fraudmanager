@@ -5,6 +5,7 @@ import ma.s2m.fraudmanager.service.NatsService;
 import ma.s2m.fraudmanager.service.db.EclipseStoreService;
 import ma.s2m.fraudmanager.service.db.IStoreService;
 import ma.s2m.fraudmanager.service.db.RocksDBService;
+import ma.s2m.fraudmanager.service.db.StorageConfig;
 import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.fraudmanager.service.processors.QueryProcessor;
 import ma.s2m.functions.Function;
@@ -23,6 +24,8 @@ import java.util.concurrent.Executors;
 public class AppConfig {
     private static final Logger logger = LoggerFactory.getLogger(AppConfig.class);
     private static final String NATS_PROTOCOL = "nats://";
+    private static final String SHARD_SEPARATOR = ",";
+    private static final String SHARD_RANGE_SEPARATOR = "-";
     public static String natsHost;
     public static int natsPort;
     public static String natsTopic;
@@ -109,10 +112,10 @@ public class AppConfig {
 
         String shardsProp = centralRepository.getProperty("storage." + nodeName + ".shards", "0");
         if (shardsProp != null && !shardsProp.isEmpty()) {
-            String[] parts = shardsProp.split(",");
+            String[] parts = shardsProp.split(SHARD_SEPARATOR);
             for (String part : parts) {
-                if (part.contains("-")) {
-                    String[] range = part.split("-");
+                if (part.contains(SHARD_RANGE_SEPARATOR)) {
+                    String[] range = part.split(SHARD_RANGE_SEPARATOR);
                     int start = Integer.parseInt(range[0].trim());
                     int end = Integer.parseInt(range[1].trim());
                     for (int i = start; i <= end; i++) {
@@ -142,10 +145,19 @@ public class AppConfig {
     }
 
     public IStoreService storeService(String storagePath, int storageQueueSize) {
+        StorageConfig cfg = new StorageConfig(
+                storageDiskShardCount,
+                new ArrayList<>(storageShards),
+                nodeName,
+                storageFlushIntervalMs,
+                storageSubmitTimeoutMs,
+                storageMemoryShardCount,
+                ma.s2m.fraudmanager.metrics.Metrics.getRegistry()
+        );
         if ("eclipsestore".equalsIgnoreCase(appStorageType)) {
-            return new EclipseStoreService(storagePath);
+            return new EclipseStoreService(storagePath, cfg);
         }
-        return new RocksDBService(storagePath, storageQueueSize);
+        return new RocksDBService(storagePath, storageQueueSize, cfg);
     }
 
     private static String ruleTypeConverter(int ruleType) {
