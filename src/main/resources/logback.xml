@@ -43,7 +43,7 @@
     <logger name="org.eclipse.jetty" level="WARN"/-->
 
     <!-- Root logger -->
-    <!--root level="${LOG_LEVEL}">
+    <root level="${LOG_LEVEL}">
         <appender-ref ref="STDOUT"/>
-    </root>-->
+    </root>
 </configuration>
