@@ -58,11 +58,11 @@ public class Main {
     }
 
     public static void init() {
-        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory
-                .getRuleProvider(IDroolBuilderRuleProvider.PROVIDER_TYPE_DB_REDIS);
+        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(IDroolBuilderRuleProvider.PROVIDER_TYPE_DB_REDIS);
         String deployedVersion = null;
         Boolean deployed = false;
 
+        logger.info("Starting with total disk shards: {}", AppConfig.storageDiskShardCount);
         while (!deployed) {
             try {
                 deployedVersion = ruleProvider.getCurrentlyDeployed();

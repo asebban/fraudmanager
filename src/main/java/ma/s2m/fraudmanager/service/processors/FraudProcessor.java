@@ -38,6 +38,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -410,9 +411,11 @@ public class FraudProcessor {
         int expectedSize = finalMeasurment.getRecords().size();
         Map<String, RecordsDelta> deltas = new HashMap<>(expectedSize);
 
+        // Snapshot to avoid ConcurrentModificationException when records are updated concurrently
+        Map<String, MeasurmentRecord> finalRecordsSnapshot = safeSnapshotMap(finalMeasurment.getRecords() != null ? finalMeasurment.getRecords().getRecordHashMap() : null);
+
         if (initialMeasurment.getRecords().isEmpty()) {
-            for (Entry<String, MeasurmentRecord> entry : Collections
-                    .unmodifiableMap(finalMeasurment.getRecords().getRecordHashMap()).entrySet()) {
+            for (Entry<String, MeasurmentRecord> entry : finalRecordsSnapshot.entrySet()) {
                 String recordKey = entry.getKey();
                 MeasurmentRecord record = entry.getValue();
 
@@ -427,8 +430,7 @@ public class FraudProcessor {
             return deltas;
         }
 
-        for (Entry<String, MeasurmentRecord> entry : Collections
-                .unmodifiableMap(finalMeasurment.getRecords().getRecordHashMap()).entrySet()) {
+        for (Entry<String, MeasurmentRecord> entry : finalRecordsSnapshot.entrySet()) {
             String recordKey = entry.getKey();
             MeasurmentRecord finalRecord = entry.getValue();
             MeasurmentRecord initialRecord = initialMeasurment.getRecords().peek(recordKey);
@@ -437,9 +439,9 @@ public class FraudProcessor {
                 deltas.put(recordKey, new RecordsDelta());
                 deltas.get(recordKey).setCountDelta(finalRecord.getCount());
                 deltas.get(recordKey).setAmountDelta(finalRecord.getAmount());
-                deltas.get(recordKey).setValuesDelta(new HashMap<>(finalRecord.getValues()));
-                deltas.get(recordKey).setArgListDelta(new ArrayList<>(finalRecord.getArgList()));
-                deltas.get(recordKey).setArgSetDelta(new HashSet<>(finalRecord.getArgSet()));
+                deltas.get(recordKey).setValuesDelta(safeSnapshotMap(finalRecord.getValues()));
+                deltas.get(recordKey).setArgListDelta(new ArrayList<>(safeSnapshotList(finalRecord.getArgList())));
+                deltas.get(recordKey).setArgSetDelta(new HashSet<>(safeSnapshotSet(finalRecord.getArgSet())));
             } else {
                 deltas.put(recordKey, new RecordsDelta());
                 deltas.get(recordKey).setCountDelta(
@@ -448,12 +450,13 @@ public class FraudProcessor {
                         - (initialRecord.getAmount() == null ? 0.0 : initialRecord.getAmount()));
 
                 Map<String, Object> valuesDelta=null;
-                if (!finalRecord.getValues().isEmpty()) {
+                Map<String, Object> finalValuesSnapshot = safeSnapshotMap(finalRecord.getValues());
+                if (!finalValuesSnapshot.isEmpty()) {
                     valuesDelta = new HashMap<>(10);
-                    for (Entry<String, Object> valueEntry : finalRecord.getValues().entrySet()) {
+                    for (Entry<String, Object> valueEntry : finalValuesSnapshot.entrySet()) {
                         String attrKey = valueEntry.getKey();
                         Object finalValue = valueEntry.getValue();
-                        Object initialValue = initialRecord.getValues().get(attrKey);
+                        Object initialValue = initialRecord.getValues() != null ? initialRecord.getValues().get(attrKey) : null;
                         if (finalValue instanceof Double) {
                             Double deltaValue = (Double) finalValue
                                 - (initialValue != null && initialValue instanceof Double ? (Double) initialValue
@@ -481,26 +484,68 @@ public class FraudProcessor {
             }
 
             Set<String> initialArgSet = initialRecord != null && initialRecord.getArgSet() != null
-                    ? initialRecord.getArgSet()
+                    ? safeSnapshotSet(initialRecord.getArgSet())
                     : new HashSet<>();
             Set<String> finalArgSet = finalRecord != null && finalRecord.getArgSet() != null ? finalRecord.getArgSet()
                     : new HashSet<>();
-            Set<String> argSetDelta = new HashSet<>(finalArgSet);
+            Set<String> argSetDelta = new HashSet<>(safeSnapshotSet(finalArgSet));
             argSetDelta.removeAll(initialArgSet);
             deltas.get(recordKey).setArgSetDelta(argSetDelta);
 
             List<String> initialArgList = initialRecord != null && initialRecord.getArgList() != null
-                    ? initialRecord.getArgList()
+                    ? safeSnapshotList(initialRecord.getArgList())
                     : new ArrayList<>();
             List<String> finalArgList = finalRecord != null && finalRecord.getArgList() != null
                     ? finalRecord.getArgList()
                     : new ArrayList<>();
-            List<String> argListDelta = new ArrayList<>(finalArgList);
+            List<String> argListDelta = new ArrayList<>(safeSnapshotList(finalArgList));
             argListDelta.removeAll(initialArgList);
             deltas.get(recordKey).setArgListDelta(argListDelta);
         }
 
         return deltas;
+    }
+
+    private static <K, V> Map<K, V> safeSnapshotMap(Map<K, V> source) {
+        if (source == null) {
+            return new HashMap<>();
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                return new HashMap<>(source);
+            } catch (ConcurrentModificationException ignored) {
+                // retry
+            }
+        }
+        return new HashMap<>(source);
+    }
+
+    private static <T> List<T> safeSnapshotList(List<T> source) {
+        if (source == null) {
+            return new ArrayList<>();
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                return new ArrayList<>(source);
+            } catch (ConcurrentModificationException ignored) {
+                // retry
+            }
+        }
+        return new ArrayList<>(source);
+    }
+
+    private static <T> Set<T> safeSnapshotSet(Set<T> source) {
+        if (source == null) {
+            return new HashSet<>();
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                return new HashSet<>(source);
+            } catch (ConcurrentModificationException ignored) {
+                // retry
+            }
+        }
+        return new HashSet<>(source);
     }
 
     /**
@@ -556,6 +601,10 @@ public class FraudProcessor {
             throw new RuntimeException("processWindowSize: transaction cannot be null");
         }
 
+        if (transaction.getTransactionNo() == null) {
+            throw new RuntimeException("processWindowSize: transaction number cannot be null");
+        }
+
         List<TrxEntry> allTrx = measurment.getTrxEntries();
         if (allTrx == null) {
             throw new RuntimeException("processWindowSize: allTrx cannot be null");
@@ -586,7 +635,7 @@ public class FraudProcessor {
         Long cloneEnd = System.currentTimeMillis();
         logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
-        // Set the current transaction in the measurment for drools processing
+        // Set the current transaction in the measurment for drools processing        
         measurment.setTransaction(transaction);
 
         try {
@@ -1082,7 +1131,14 @@ public class FraudProcessor {
                 measurment.setGlobalRecords(globalRecord);
 
                 Long beforeProcessWindowSize = System.currentTimeMillis();
-                measurment = processSlidingWindow(measurment, processedEvent, arrivalTime, correlationId);
+                try {
+                    measurment = processSlidingWindow(measurment, processedEvent, arrivalTime, correlationId);
+                } catch(Exception e) {
+                    logger.error("Error processing sliding window for processedEvent: {}", processedEvent);
+                    e.printStackTrace();
+                    return null;
+                }
+                
                 Long afterProcessWindowSize = System.currentTimeMillis();
                 logger.debug("Time {} ms [{}] [{}] [Thread : {}] key={} trx={} processEvent: Duration of processSlidingWindow({})", (afterProcessWindowSize - beforeProcessWindowSize), correlationId, subject + (customSubject != null ? ":" + customSubject : ""), Thread.currentThread().getName(), key, processedEvent.getTransaction().getTransactionNo(), TimeConversion.toHumanReadableDuration(ruleWindowSize));
 
@@ -1150,6 +1206,9 @@ public class FraudProcessor {
         }
 
         // update the global record in the database
+        if (globalRecord == null) {
+            globalRecord = new RecordHashMap();
+        }
         this.storageService.setRecordHashMapByKey(globalRecordKey, globalRecord);
 
         processedEvent.setAlertSet(alertSet);

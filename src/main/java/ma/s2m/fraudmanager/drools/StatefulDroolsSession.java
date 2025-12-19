@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.kie.api.event.rule.AgendaEventListener;
 import org.kie.api.runtime.KieSession;
@@ -31,6 +32,7 @@ final class StatefulDroolsSession implements DroolsSession {
     private Map<FactHandle, EntryPoint> insertedHandles = new HashMap<>();
     private RuleProfiler ruleProfiler = new RuleProfiler();
     private String correlationId = "";
+    private final AtomicBoolean inUse = new AtomicBoolean(false);
 
     public StatefulDroolsSession(KieSession ks) {
         this.ks = ks;
@@ -53,6 +55,13 @@ final class StatefulDroolsSession implements DroolsSession {
 
     @Override
     public void execute(Object... facts) {
+
+        if (!inUse.compareAndSet(false, true)) {
+            // A KieSession is not thread-safe; concurrent usage corrupts internal state.
+            throw new IllegalStateException("Drools session used concurrently");
+        }
+
+        try {
 
         if (noRules) {
             logger.debug("###### No rules executed, skipping processing");
@@ -83,6 +92,15 @@ final class StatefulDroolsSession implements DroolsSession {
             this.ruleProfiler.reset();
         }
 
+        if (m == null || m.getTransaction() == null || m.getTransaction().getTransactionNo() == null) {
+            logger.error("Measurment or Transaction or TransactionNo is null, skipping rule execution. correlationId={}, subject={}",
+                    this.correlationId, this.extendedSubject);
+            return;
+        }
+
+        // Defensive: ensure no stale handles from a previous failed execution
+        insertedHandles.clear();
+        
         Set<String> groupSet = RulesConfig.ruleGroupsPerWindowSizeMap.get(this.extendedSubject + FraudProcessor.WINDOW_SEPARATOR + m.getWindowSize());
         if (groupSet != null) {
             for (String groupName : groupSet) {
@@ -96,43 +114,60 @@ final class StatefulDroolsSession implements DroolsSession {
             }
         }
 
-        if (AppConfig.droolsRulesAgendaGroupRuleTypeEnabled) {
-            Long t0 = System.currentTimeMillis();
-            ks.fireAllRules();
-            Long t1 = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}, last rule name: {}", (t1 - t0),
-                    this.correlationId, this.extendedSubject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
-                    m != null ? m.getKey() : "N/A", formattedDuration, this.ruleProfiler.getLastRuleName());
-            if (droolsProfilerEnabled) {
-                final Measurment finalM = m;
-                final String cId = this.correlationId;
-                this.ruleProfiler.reportTop(10).forEach(s -> {
-                    logger.debug("[{}] trx {} - win {} : {} : {}", cId,
-                            finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration,
-                            this.extendedSubject, s);
-                });
-            }
+        try {
+            if (AppConfig.droolsRulesAgendaGroupRuleTypeEnabled) {
+                Long t0 = System.currentTimeMillis();
+                ks.fireAllRules();
+                Long t1 = System.currentTimeMillis();
+                logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}, last rule name: {}", (t1 - t0),
+                        this.correlationId, this.extendedSubject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
+                        m != null ? m.getKey() : "N/A", formattedDuration, this.ruleProfiler.getLastRuleName());
+                if (droolsProfilerEnabled) {
+                    final Measurment finalM = m;
+                    final String cId = this.correlationId;
+                    this.ruleProfiler.reportTop(10).forEach(s -> {
+                        logger.debug("[{}] trx {} - win {} : {} : {}", cId,
+                                finalM != null ? finalM.getTransaction().getTransactionNo() : "N/A", formattedDuration,
+                                this.extendedSubject, s);
+                    });
+                }
 
-        } else {
-            Long t0 = System.nanoTime();
-            ks.fireAllRules();
-            logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}",
-                    (System.nanoTime() - t0) / 1_000_000, formattedDuration,
-                    m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
+            } else {
+                Long t0 = System.nanoTime();
+                ks.fireAllRules();
+                logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}",
+                        (System.nanoTime() - t0) / 1_000_000, formattedDuration,
+                        m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
 
-            if (droolsProfilerEnabled) {
-                this.ruleProfiler.reportTop(10).forEach(logger::debug);
+                if (droolsProfilerEnabled) {
+                    this.ruleProfiler.reportTop(10).forEach(logger::debug);
+                }
             }
+        } catch (Exception e) {
+            logger.error("Error during fireAllRules execution, correlationId={}, subject={}, trx={} ",
+                    this.correlationId, this.extendedSubject,
+                    m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A", e);
+            throw e;
+        } finally {
+            // Always remove inserted facts, even when fireAllRules fails, to prevent corrupt reuse via pool.
+            cleanEntryPoints();
         }
-        cleanEntryPoints();
+
+        } finally {
+            inUse.set(false);
+        }
     }
 
     private void cleanEntryPoints() {
-        for (Map.Entry<FactHandle, EntryPoint> entry : insertedHandles.entrySet()) {
+        for (Map.Entry<FactHandle, EntryPoint> entry : new HashMap<>(insertedHandles).entrySet()) {
             FactHandle handle = entry.getKey();
             EntryPoint ep = entry.getValue();
             if (handle != null) {
-                ep.delete(handle);
+                try {
+                    ep.delete(handle);
+                } catch (Exception e) {
+                    logger.debug("Ignoring delete failure for FactHandle during cleanup: {}", e.toString());
+                }
             }
         }
         insertedHandles.clear();

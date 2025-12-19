@@ -8,6 +8,7 @@ import ma.s2m.fraudmanager.service.db.RocksDBService;
 import ma.s2m.fraudmanager.service.db.StorageConfig;
 import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.fraudmanager.service.processors.QueryProcessor;
+import ma.s2m.fraudmanager.util.PropertiesLoader;
 import ma.s2m.functions.Function;
 import ma.s2m.repository.IRepository;
 import ma.s2m.repository.PropertiesRepository;
@@ -66,8 +67,8 @@ public class AppConfig {
 
     public AppConfig(String[] args) throws Exception {
 
-        IRepository localPropertyFile = new PropertiesRepository("fraudmanager.properties");
-        String repositoryClassName = localPropertyFile.getProperty("app.processor.repository.class", "ma.s2m.repository.PropertiesRepository");
+        PropertiesLoader loader = new PropertiesLoader("fraudmanager.properties");
+        String repositoryClassName = loader.getProperty("app.processor.repository.class", "ma.s2m.repository.PropertiesRepository");
         IRepository centralRepository = (IRepository) Function.createDynamicClass(repositoryClassName, "fraudmanager.properties", args);
         centralRepository.load();
 
