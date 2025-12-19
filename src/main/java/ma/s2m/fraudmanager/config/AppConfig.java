@@ -11,7 +11,6 @@ import ma.s2m.fraudmanager.service.processors.QueryProcessor;
 import ma.s2m.fraudmanager.util.PropertiesLoader;
 import ma.s2m.functions.Function;
 import ma.s2m.repository.IRepository;
-import ma.s2m.repository.PropertiesRepository;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
 import org.slf4j.Logger;

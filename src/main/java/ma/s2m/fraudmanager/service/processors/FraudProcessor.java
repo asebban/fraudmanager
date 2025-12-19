@@ -869,7 +869,8 @@ public class FraudProcessor {
                     CompletableFuture<TrxOrAlertEvent> cardProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             // create the input event
-                            TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                            VRTransactionSummary trx = new VRTransactionSummary(tx);
+                            TrxOrAlertEvent event = new TrxOrAlertEvent(trx, null, correlationId);
                             return keyProcessor.executeWithLock(cardKey, (key) -> {
                                 TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, ruleMapForCard, false);
                                 return cardEvent;
@@ -889,7 +890,8 @@ public class FraudProcessor {
                 CompletableFuture<TrxOrAlertEvent> cardProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
                         // create the input event
-                        TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                        VRTransactionSummary trx = new VRTransactionSummary(tx);
+                        TrxOrAlertEvent event = new TrxOrAlertEvent(trx, null, correlationId);
                         return keyProcessor.executeWithLock(cardKey, (key) -> {
                             TrxOrAlertEvent cardEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CARD, null, RulesConfig.rulesMapForCardSubjectFixedWindow, true);
                             return cardEvent;
@@ -913,7 +915,8 @@ public class FraudProcessor {
                     CompletableFuture<TrxOrAlertEvent> merchantProcessing = CompletableFuture.supplyAsync(() -> {
                         try {
                             // create the input event
-                            TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                            VRTransactionSummary trx = new VRTransactionSummary(tx);
+                            TrxOrAlertEvent event = new TrxOrAlertEvent(trx, null, correlationId);
                             return keyProcessor.executeWithLock(merchantKey, (key) -> {
                                 TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, ruleMapForMerchant, false);
                                 return merchantEvent;
@@ -932,7 +935,8 @@ public class FraudProcessor {
                 CompletableFuture<TrxOrAlertEvent> merchantProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                     try {
                         // create the input event
-                        TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                        VRTransactionSummary trx = new VRTransactionSummary(tx);
+                        TrxOrAlertEvent event = new TrxOrAlertEvent(trx, null, correlationId);
                         return keyProcessor.executeWithLock(merchantKey, (key) -> {
                             TrxOrAlertEvent merchantEvent = processEvent(event, key, arrivalTime, correlationId, Subject.MERCHANT, null, RulesConfig.rulesMapForMerchantSubjectFixedWindow, true);
                             return merchantEvent;
@@ -961,7 +965,8 @@ public class FraudProcessor {
                         CompletableFuture<TrxOrAlertEvent>customProcessing = CompletableFuture.supplyAsync(() -> {
                             try {
                                 // create the input event
-                                TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                                VRTransactionSummary trx = new VRTransactionSummary(tx);
+                                TrxOrAlertEvent event = new TrxOrAlertEvent(trx, null, correlationId);
                                 return keyProcessor.executeWithLock(customSubject + KEY_SEPARATOR + keyValue, (key) -> {
                                     TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubject.get(customSubject), false);
                                     return customEvent;
@@ -991,7 +996,8 @@ public class FraudProcessor {
                         CompletableFuture<TrxOrAlertEvent> customProcessingFixedWindow = CompletableFuture.supplyAsync(() -> {
                             try {
                                 // create the input event
-                                TrxOrAlertEvent event = new TrxOrAlertEvent(tx, null, correlationId);
+                                VRTransactionSummary trx = new VRTransactionSummary(tx);
+                                TrxOrAlertEvent event = new TrxOrAlertEvent(trx, null, correlationId);
                                 return keyProcessor.executeWithLock(customSubject + KEY_SEPARATOR + keyValue, (key) -> {
                                     TrxOrAlertEvent customEvent = processEvent(event, key, arrivalTime, correlationId, Subject.CUSTOM, customSubject, RulesConfig.rulesMapForCustomSubjectFixedWindow.get(customSubject), true);
                                     return customEvent;
