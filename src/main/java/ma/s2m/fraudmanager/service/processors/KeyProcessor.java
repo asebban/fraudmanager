@@ -10,7 +10,6 @@ import ma.s2m.fraudmanager.service.db.IStoreService;
 
 public class KeyProcessor {
 
-    private IStoreService storageService;
     Logger logger = org.slf4j.LoggerFactory.getLogger(KeyProcessor.class);
 
     /**
@@ -27,8 +26,6 @@ public class KeyProcessor {
 
 
     public KeyProcessor(IStoreService storageService) {
-        this.storageService = storageService;
-
         for (int i = 0; i < LOCK_STRIPES; i++) {
             stripedLocks[i] = new ReentrantLock();
         }
