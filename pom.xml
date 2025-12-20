@@ -78,7 +78,7 @@
         <dependency>
             <groupId>ma.medtech</groupId>
             <artifactId>drool-builder</artifactId>
-            <version>3.3.0-FLINKLESS-RELEASE</version>
+            <version>3.4.0-FLINKLESS-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
@@ -88,7 +88,7 @@
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>fraudmanager-storage</artifactId>
-            <version>1.0.0-RELEASE</version>
+            <version>1.0.1-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
@@ -98,7 +98,7 @@
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>config-repository</artifactId>
-            <version>1.0.0-RELEASE</version>
+            <version>1.0.1-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>org.eclipse.store</groupId>
