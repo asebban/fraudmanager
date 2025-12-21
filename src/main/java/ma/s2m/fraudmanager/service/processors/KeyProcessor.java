@@ -36,14 +36,8 @@ public class KeyProcessor {
         // Spread bits to reduce stripe collisions for similar hash codes.
         h ^= (h >>> 16);
 
-        // Fast path when LOCK_STRIPES is a power of two (it is: 65536).
-        if ((LOCK_STRIPES & (LOCK_STRIPES - 1)) == 0) {
-            return stripedLocks[h & (LOCK_STRIPES - 1)];
-        }
-
-        @SuppressWarnings("unused")
-        int idx = Math.floorMod(h, LOCK_STRIPES);
-        return stripedLocks[idx];
+        // LOCK_STRIPES is a power of two (65536), so bitmask is correct and fastest.
+        return stripedLocks[h & (LOCK_STRIPES - 1)];
     }
     /**
      * Exécute une opération avec verrouillage automatique

@@ -29,6 +29,7 @@ public class NatsService {
     // garder une référence pour pouvoir se désabonner/stopper
     private Dispatcher dispatcher;
     private Dispatcher queryDispatcher;
+    private Dispatcher ruleUpdateDispatcher;
 
     public NatsService(Connection nc, ExecutorService executor, FraudProcessor fraudProcessor, QueryProcessor queryProcessor, IStoreService storageService) {
         this.nc = nc;
@@ -121,6 +122,21 @@ public class NatsService {
 
         logger.info(AppConfig.nodeName + ": Started virtual‑thread executor for processing NATS messages and query dispatcher");
 
+        // Dispatcher for rules update notifications
+        this.ruleUpdateDispatcher = nc.createDispatcher(msg -> {
+            executor.submit(() -> {
+                try {
+                    fraudProcessor.onRuleUpdate(msg);
+                } catch (Exception e) {
+                    logger.error("Error while processing rules update notification", e);
+                }
+            });
+        });
+
+        // Subscribe to the requested topic name and keep backward compatibility with existing publisher.
+        ruleUpdateDispatcher.subscribe(AppConfig.natsRuleUpdateTopic);
+        logger.info("Subscribed to rules update topic: {}", AppConfig.natsRuleUpdateTopic);
+
     }
 
     /**
@@ -136,6 +152,11 @@ public class NatsService {
             if (queryDispatcher != null) {
                 queryDispatcher.unsubscribe(AppConfig.natsQueryTopic);
                 queryDispatcher = null;
+            }
+            if (ruleUpdateDispatcher != null) {
+                ruleUpdateDispatcher.unsubscribe("rule.update");
+                ruleUpdateDispatcher.unsubscribe("rules.update");
+                ruleUpdateDispatcher = null;
             }
         } catch (Exception e) {
             logger.warn("Error while unsubscribing dispatcher", e);

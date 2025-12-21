@@ -30,6 +30,7 @@ public class AppConfig {
     public static int natsPort;
     public static String natsTopic;
     public static String natsAlertSetTopic;
+    public static String natsRuleUpdateTopic;
     public static String redisHost;
     public static int redisPort;
     public static String redisUser;
@@ -63,6 +64,8 @@ public class AppConfig {
     public static boolean metricsEnabled = false;
     public static int metricsPort = 9464;
     public static String metricsPath = "/metrics";
+    public static int appRulesReloadRetryIntervalSeconds = 1;
+    public static int appRulesReloadMaxRetries = 3;
 
     public AppConfig(String[] args) throws Exception {
 
@@ -75,6 +78,7 @@ public class AppConfig {
         natsPort = Integer.parseInt(centralRepository.getProperty("nats.port", "4222"));
         natsTopic = centralRepository.getProperty("nats.topic", "fraud.check");
         natsAlertSetTopic = centralRepository.getProperty("nats.alertset.topic", "fraud.alert");
+        natsRuleUpdateTopic = centralRepository.getProperty("nats.rule.update.topic", "rule.update");
 
         redisHost = centralRepository.getProperty("redis.host", "localhost");
         redisPort = Integer.parseInt(centralRepository.getProperty("redis.port", "6379"));
@@ -109,6 +113,8 @@ public class AppConfig {
         metricsEnabled = Boolean.parseBoolean(centralRepository.getProperty("metrics.enabled", "false"));
         metricsPort = Integer.parseInt(centralRepository.getProperty("metrics.port", "9464"));
         metricsPath = centralRepository.getProperty("metrics.path", "/metrics");
+        appRulesReloadRetryIntervalSeconds = Integer.parseInt(centralRepository.getProperty("app.rules.reload.retry.interval.seconds", "1"));
+        appRulesReloadMaxRetries = Integer.parseInt(centralRepository.getProperty("app.rules.reload.max.retries", "3"));
 
         String shardsProp = centralRepository.getProperty("storage." + nodeName + ".shards", "0");
         if (shardsProp != null && !shardsProp.isEmpty()) {

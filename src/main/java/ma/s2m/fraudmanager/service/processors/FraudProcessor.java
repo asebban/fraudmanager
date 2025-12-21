@@ -1,6 +1,8 @@
 package ma.s2m.fraudmanager.service.processors;
 
 import ma.medtech.droolbuilder.messaging.IMessageSender;
+import ma.medtech.droolbuilder.publisher.providers.DroolBuilderRuleProviderFactory;
+import ma.medtech.droolbuilder.publisher.providers.IDroolBuilderRuleProvider;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
 import ma.medtech.droolbuilder.services.TypeConverter;
 import ma.medtech.droolbuilder.utils.TimeConversion;
@@ -11,6 +13,7 @@ import ma.s2m.auth.FraudCheckResponse;
 import ma.s2m.auth.ITransaction;
 import ma.s2m.auth.impl.VRTransactionSummary;
 import ma.s2m.auth.impl.VirtualRecordTransaction;
+import ma.s2m.fraudmanager.FraudManagerStarter;
 import ma.s2m.fraudmanager.config.AppConfig;
 import ma.s2m.fraudmanager.config.RulesConfig;
 import ma.s2m.fraudmanager.drools.DroolsSession;
@@ -25,12 +28,14 @@ import ma.s2m.fraudmanager.model.TrxEntry;
 import ma.s2m.fraudmanager.model.TrxOrAlertEvent;
 import ma.s2m.fraudmanager.model.WrapperMeasurment;
 import ma.s2m.fraudmanager.service.ExternalSystem;
+import ma.s2m.fraudmanager.service.RuleDeploymentState;
 import ma.s2m.fraudmanager.service.db.IStoreService;
 import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.functions.Function;
 import ma.s2m.serializer.SerializationManager;
 import io.nats.client.Connection;
 import io.nats.client.Message;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Set;
 import java.io.FileNotFoundException;
@@ -51,6 +56,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,6 +72,8 @@ public class FraudProcessor {
     private final int sessionPoolSize;
     private final KeyProcessor keyProcessor;
 
+    private final ReentrantReadWriteLock rulesReloadLock = new ReentrantReadWriteLock();
+
     public static final String WINDOW_SEPARATOR = "/";
     public static final String KEY_SEPARATOR = ":";
     public static final String FIXED_WINDOW_PREFIX = "FW:";
@@ -75,6 +83,7 @@ public class FraudProcessor {
     public static final String GLOBAL_RECORD_KEY_SUFFIX = "GLOBAL";
     public static final String NO_ERROR_MESSAGE = "No Error";
     public static final String LOCK_KEY_PREFIX = "LOCK" + KEY_SEPARATOR;
+    public static final String ALERT_UNAVAILABLE = "ALERT_UNAVAILABLE";
 
     public FraudProcessor(IStoreService storageService, Connection natsConnection) {
         this.storageService = storageService;
@@ -112,13 +121,293 @@ public class FraudProcessor {
         }
     }
 
+    private void respondUnavailable(Message msg, String correlationId) {
+        String replyTopic = msg.getReplyTo();
+        if (replyTopic == null || replyTopic.isBlank()) {
+            logger.warn("Received message without replyTo; cannot respond with {}", ALERT_UNAVAILABLE);
+            return;
+        }
+
+        String version = RuleDeploymentState.getRequestedVersionOrUnknown();
+        String message = "New rules version deployment in progress : " + version;
+
+        Alert alert = new Alert(message, Alert.POSTPONE);
+        alert.setRuleTitle(ALERT_UNAVAILABLE);
+
+        AlertSet alertSet = new AlertSet();
+        alertSet.setAlertStatus(ALERT_UNAVAILABLE);
+        java.util.Set<Alert> alerts = new java.util.HashSet<>();
+        alerts.add(alert);
+        alertSet.setAlerts(alerts);
+
+        FraudCheckResponse response = new FraudCheckResponse();
+        response.setAlertSet(alertSet);
+        response.setCorrelationId(correlationId);
+        response.setTimestamp(System.currentTimeMillis());
+        response.setError(false);
+        response.setErrorMessage(NO_ERROR_MESSAGE);
+
+        try {
+            byte[] responseBytes = SerializationManager.serialize(response);
+            natsConnection.publish(replyTopic, responseBytes);
+        } catch (Exception e) {
+            logger.error("Error serializing/publishing {} response", ALERT_UNAVAILABLE, e);
+        }
+    }
+
+    /**
+     * Triggered by NATS rule update topic. Blocks until the new version is activated
+     * and Kie sessions are recreated.
+     */
+    public void onRuleUpdate(Message msg) {
+        String payloadVersion = null;
+        try {
+            payloadVersion = msg.getData() == null ? null : new String(msg.getData(), StandardCharsets.UTF_8).trim();
+        } catch (Exception ignore) {
+        }
+
+        boolean reloadOk = false;
+        int numRetries = AppConfig.appRulesReloadMaxRetries;
+        
+        // Save old version for potential rollback
+        // RulesConfig.extendedVersion format is usually "Ruleset-Version"
+        String oldVersionFull = RulesConfig.extendedVersion; 
+
+        // Mark as in-progress (do not start a second reload concurrently).
+        boolean started = RuleDeploymentState.begin(payloadVersion);
+        if (!started) {
+            RuleDeploymentState.updateRequestedVersion(payloadVersion);
+            logger.info("Rules deployment already in progress; updated requested version to {}", RuleDeploymentState.getRequestedVersionOrUnknown());
+            return;
+        }
+
+        while(!reloadOk) {
+
+            Long startRulesReload = System.currentTimeMillis();
+            String requested = RuleDeploymentState.getRequestedVersionOrUnknown();
+            logger.info("Rules update notification received. Entering temporary unavailable mode. requestedVersion={}", requested);
+
+            try {
+                // 1. Prepare phase (Load config and build factories/sessions outside lock if possible or at least before destroying old ones)
+                // Note: FraudManagerStarter.init() modifies static global state (RulesConfig), so it's hard to do completely safely without lock.
+                // However, we can try to minimize the critical section or at least handle the failure gracefully.
+                
+                // We will hold the lock for the whole update to prevent inconsistencies since init() is global.
+                rulesReloadLock.writeLock().lock();
+                
+                // Temporary reference to new factory to ensure it can be created
+                DroolsSessionFactory newSessionFactory = null;
+                Map<String, BlockingQueue<DroolsSession>> newSessionPools = new HashMap<>();
+
+                try {
+                    // This updates global RulesConfig with the requested version
+                    FraudManagerStarter.init(payloadVersion); 
+                    
+                    newSessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
+                    
+                    // Pre-create sessions to ensure everything is valid
+                    // We duplicate the initSessionPools logic here to build into a temp map
+                    Set<String> subjects = new HashSet<>();
+                    if (RulesConfig.cardSubjectPresent) subjects.add(Subject.CARD);
+                    if (RulesConfig.merchantSubjectPresent) subjects.add(Subject.MERCHANT);
+                    if (RulesConfig.customSubjectPresent) {
+                        subjects.addAll(RulesConfig.rulesMapForCustomSubject.keySet());
+                        subjects.addAll(RulesConfig.rulesMapForCustomSubjectFixedWindow.keySet());
+                    }
+
+                    for (String subject : subjects) {
+                        BlockingQueue<DroolsSession> queue = new ArrayBlockingQueue<>(sessionPoolSize);
+                        for (int i = 0; i < sessionPoolSize; i++) {
+                            // We need a helper that uses the NEW sessionFactory
+                            DroolsSession session = createSessionForSubject(subject, newSessionFactory);
+                            queue.offer(session);
+                        }
+                        newSessionPools.put(subject, queue);
+                    }
+                    
+                    // 2. Swap phase - Dispose old and assign new
+                    // Dispose existing
+                    sessionPools.values().forEach(queue -> {
+                        queue.forEach(session -> {
+                            try {
+                                session.dispose();
+                            } catch (Exception ignore) {}
+                        });
+                        queue.clear();
+                    });
+                    sessionPools.clear();
+                    
+                    // Apply new
+                    this.sessionFactory = newSessionFactory;
+                    this.sessionPools.putAll(newSessionPools);
+                    
+                    logger.info(AppConfig.nodeName + ": Replaced Drools session pools with {} subjects", newSessionPools.size());
+
+                } finally {
+                    rulesReloadLock.writeLock().unlock();
+                }
+
+                reloadOk = true;
+                logger.info("Rules reload complete. Now running with RulesConfig.extendedVersion={}", RulesConfig.extendedVersion);
+                Long endRulesReload = System.currentTimeMillis();
+                logger.debug("Rules reload took {} ms", endRulesReload - startRulesReload);
+
+            } catch (Exception e) {
+                logger.error("Rules reload failed; staying in {} mode, retrying in {} seconds", ALERT_UNAVAILABLE, AppConfig.appRulesReloadRetryIntervalSeconds);
+                
+                try {
+                    Thread.sleep(AppConfig.appRulesReloadRetryIntervalSeconds * 1000L);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("Retry sleep interrupted");
+                    break; 
+                }
+                
+                numRetries--;
+                if (numRetries == 0) {
+                    logger.error("Rules reload failed {} times; giving up and rolling back to old version: {}", AppConfig.appRulesReloadMaxRetries, oldVersionFull);
+                    
+                    // Rollback Logic
+                    try {
+                        rulesReloadLock.writeLock().lock();
+                        // 1. Revert local state
+                        // Parse "Ruleset-Version" -> "Ruleset:Version" for init() if needed, 
+                        // BUT our new init(String) logic needs to be checked. 
+                        // The init(String) we implemented expects "Ruleset:Version" format to avoid looking up in Redis? 
+                        // Actually, let's look at how we implemented init(String): 
+                        // "String deployedRuleset = deployedVersion.split(":")[0];" 
+                        // So we MUST pass "Ruleset:Version".
+                        
+                        String ruleset = null;
+                        String version = null;
+                        if (oldVersionFull != null && oldVersionFull.contains("-")) {
+                             int firstDash = oldVersionFull.indexOf("-");
+                             ruleset = oldVersionFull.substring(0, firstDash);
+                             version = oldVersionFull.substring(firstDash + 1);
+                        }
+                        
+                        if (ruleset != null && version != null) {
+                            String oldVersionFormatted = ruleset + ":" + version;
+                            logger.info("Rolling back local configuration to {}", oldVersionFormatted);
+                            FraudManagerStarter.init(oldVersionFormatted); 
+                            recreateSessionsAfterRulesReload(); // Restore sessions for old version
+                            
+                            // 2. Revert Redis state
+                             IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(ma.medtech.Main.providerType);
+                             logger.info("Restoring Redis active version to {}", oldVersionFormatted);
+                             ruleProvider.activateRuleset(ruleset, version);
+                             ruleProvider.deployRuleset(ruleset, version, " -> Redeployment of old version: " + oldVersionFormatted);
+                        } else {
+                            logger.error("Could not parse old version string '{}', cannot rollback reliably.", oldVersionFull);
+                        }
+                        
+                    } catch (Exception rollbackEx) {
+                        logger.error("Critical: Rollback failed!", rollbackEx);
+                    } finally {
+                        rulesReloadLock.writeLock().unlock();
+                    }
+                    
+                    reloadOk = true; // Exit loop, even though we failed the update
+                }
+            } finally {
+                if (reloadOk) {
+                    RuleDeploymentState.end();
+                    logger.info("Exited temporary unavailable mode");
+                }
+            }
+        }
+    }
+
+    private static String extractVersionNumber(String versionLabel) {
+        if (versionLabel == null) {
+            return null;
+        }
+        String v = versionLabel.trim();
+        if (v.isBlank()) {
+            return null;
+        }
+        // Accept either "<version>", "<ruleset>-<version>", or "<ruleset>:<version>"
+        if (v.contains(":")) {
+            String[] parts = v.split(":", 2);
+            return parts.length == 2 ? parts[1].trim() : v;
+        }
+        int dash = v.indexOf('-');
+        if (dash > 0 && dash < v.length() - 1) {
+            return v.substring(dash + 1).trim();
+        }
+        return v;
+    }
+
+    private void waitUntilVersionActivated(String payloadVersion) {
+        String expectedVersionNumber = extractVersionNumber(payloadVersion);
+        if (expectedVersionNumber == null) {
+            // No payload version => just proceed to reload immediately.
+            return;
+        }
+
+        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(ma.medtech.Main.providerType);
+
+        final long timeoutMs = 10 * 60 * 1000L;
+        final long pollMs = 2000L;
+        long start = System.currentTimeMillis();
+
+        while (true) {
+            String deployedVersion = null;
+            try {
+                deployedVersion = ruleProvider.getCurrentlyDeployed(); // format: rulesetId:version
+            } catch (Exception e) {
+                logger.warn("Error while reading currently deployed rules version; will retry", e);
+            }
+
+            if (deployedVersion != null && deployedVersion.contains(":")) {
+                String[] parts = deployedVersion.split(":", 2);
+                String deployedVersionNumber = parts.length == 2 ? parts[1] : null;
+                if (deployedVersionNumber != null && deployedVersionNumber.trim().equals(expectedVersionNumber)) {
+                    return;
+                }
+            }
+
+            if (System.currentTimeMillis() - start > timeoutMs) {
+                throw new IllegalStateException("Timeout waiting for rules version activation: " + expectedVersionNumber);
+            }
+
+            try {
+                Thread.sleep(pollMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting for rules version activation", e);
+            }
+        }
+    }
+
+    private void recreateSessionsAfterRulesReload() throws IOException {
+        // Dispose and clear existing pools
+        sessionPools.values().forEach(queue -> {
+            queue.forEach(session -> {
+                try {
+                    session.dispose();
+                } catch (Exception ignore) {
+                }
+            });
+            queue.clear();
+        });
+        sessionPools.clear();
+
+        this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
+        initSessionPools();
+    }
+
     private DroolsSession createSessionForSubject(String subject) {
+        return createSessionForSubject(subject, this.sessionFactory);
+    }
+
+    private DroolsSession createSessionForSubject(String subject, DroolsSessionFactory factory) {
         Map<String, Object> globals = new HashMap<>(10);
         globals.put("timeConverter", new TimeConversion());
         globals.put("externalSystem", new ExternalSystem());
         globals.put("messageSender", messageSender);
         globals.put("typeConverter", new TypeConverter());
-        return sessionFactory.newSession(SessionMode.STATEFUL, globals);
+        return factory.newSession(SessionMode.STATEFUL, globals);
     }
 
     @SuppressWarnings("deprecation")
@@ -827,6 +1116,20 @@ public class FraudProcessor {
         long arrivalTime = System.currentTimeMillis();
         String correlationId = msg.getHeaders() == null ? null : msg.getHeaders().getFirst("x-correlation-id");
 
+        // Fast short-circuit when rules deployment/reload is in progress.
+        if (RuleDeploymentState.isInProgress()) {
+            respondUnavailable(msg, correlationId);
+            return;
+        }
+
+        // Guard against concurrent rules reloads while we process.
+        rulesReloadLock.readLock().lock();
+        try {
+            if (RuleDeploymentState.isInProgress()) {
+                respondUnavailable(msg, correlationId);
+                return;
+            }
+
         try {
             // Désérialiser
             long beforeDeserialize = System.currentTimeMillis();
@@ -1089,6 +1392,9 @@ public class FraudProcessor {
                 logger.error("Error serializing response", e1);
             }
             natsConnection.publish(topic, responseBytes);
+        }
+        } finally {
+            rulesReloadLock.readLock().unlock();
         }
     }
 

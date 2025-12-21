@@ -24,8 +24,8 @@ import java.util.StringJoiner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class Main {
-    private static final Logger logger = LoggerFactory.getLogger(Main.class);
+public class FraudManagerStarter {
+    private static final Logger logger = LoggerFactory.getLogger(FraudManagerStarter.class);
     private static NatsService natsService;
     private static boolean metricsStarted = false;
 
@@ -58,41 +58,55 @@ public class Main {
     }
 
     public static void init() {
-        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(IDroolBuilderRuleProvider.PROVIDER_TYPE_DB_REDIS);
-        String deployedVersion = null;
-        Boolean deployed = false;
+        init(null);
+    }
 
-        logger.info("Starting with total disk shards: {}", AppConfig.storageDiskShardCount);
-        while (!deployed) {
-            try {
-                deployedVersion = ruleProvider.getCurrentlyDeployed();
-                if (deployedVersion == null) {
-                    logger.error("No ruleset deployed, waiting for 5 minutes before retrying");
-                    Thread.sleep(AppConfig.waitTime);
-                } else {
-                    deployed = true;
-                    logger.info("Deployed ruleset version: " + deployedVersion);
+    public static void init(String specificVersion) {
+        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(ma.medtech.Main.providerType);
+        String deployedVersion = null;
+
+        if (specificVersion != null && !specificVersion.isBlank()) {
+            deployedVersion = specificVersion;
+            // Ensure format is compatible if needed, or assume caller provides "Ruleset:Version" or similar
+            // But based on usage, we might receive just the version string or "Ruleset-Version".
+            // Let's assume specificVersion comes in as the full string we want to use or we construct it.
+            // Actually, looking at the code below, it expects "Ruleset:Version".
+            // If the input is already in that format, great.
+        } else {
+            Boolean deployed = false;
+
+            logger.info("Starting with total disk shards: {}", AppConfig.storageDiskShardCount);
+            while (!deployed) {
+                try {
+                    deployedVersion = ruleProvider.getCurrentlyDeployed();
+                    if (deployedVersion == null) {
+                        logger.error("No ruleset deployed, waiting for 5 minutes before retrying");
+                        Thread.sleep(AppConfig.waitTime);
+                    } else {
+                        deployed = true;
+                        logger.info("Deployed ruleset version: " + deployedVersion);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
             }
         }
 
         logger.info("Using deployed ruleset version: " + deployedVersion + " from " + AppConfig.ruleDeploymentDir);
         String deployedRuleset = deployedVersion.split(":")[0];
         String deployedVersionNumber = deployedVersion.split(":")[1];
-        String currentlyDeployedVersion = deployedRuleset + "-" + deployedVersionNumber;
+        String mvnDeployedVersion = deployedRuleset + "-" + deployedVersionNumber;
 
         List<RuleDefinition> rules = null;
 
-        rules = ruleProvider.fetchRulesByRuleSetId(deployedRuleset, currentlyDeployedVersion);
+        rules = ruleProvider.fetchRulesByRuleSetId(deployedRuleset, mvnDeployedVersion);
 
         if (rules == null || rules.size() == 0) {
             throw new RuntimeException("No rules found");
         }
 
         RulesConfig.allrules = rules;
-        RulesConfig.extendedVersion = currentlyDeployedVersion;
+        RulesConfig.extendedVersion = mvnDeployedVersion;
         logger.debug("Total rules fetched: " + rules.size());
 
         // Count alert rules separately before processing the lambda
