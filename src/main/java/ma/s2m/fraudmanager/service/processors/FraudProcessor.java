@@ -1,6 +1,7 @@
 package ma.s2m.fraudmanager.service.processors;
 
 import ma.medtech.droolbuilder.messaging.IMessageSender;
+import ma.medtech.droolbuilder.publisher.DroolBuilderRulePublisher;
 import ma.medtech.droolbuilder.publisher.providers.DroolBuilderRuleProviderFactory;
 import ma.medtech.droolbuilder.publisher.providers.IDroolBuilderRuleProvider;
 import ma.medtech.droolbuilder.rules.RuleDefinition;
@@ -293,10 +294,8 @@ public class FraudProcessor {
                             recreateSessionsAfterRulesReload(); // Restore sessions for old version
                             
                             // 2. Revert Redis state
-                             IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(ma.medtech.Main.providerType);
-                             logger.info("Restoring Redis active version to {}", oldVersionFormatted);
-                             ruleProvider.activateRuleset(ruleset, version);
-                             ruleProvider.deployRuleset(ruleset, version, " -> Redeployment of old version: " + oldVersionFormatted);
+                            DroolBuilderRulePublisher publisher = new DroolBuilderRulePublisher();
+                            publisher.deployRuleset(AppConfig.repositoryWorkspaceDirectory, ruleset, version, " -> Redeployment of old version: " + oldVersionFormatted, ma.medtech.Main.providerType);
                         } else {
                             logger.error("Could not parse old version string '{}', cannot rollback reliably.", oldVersionFull);
                         }
