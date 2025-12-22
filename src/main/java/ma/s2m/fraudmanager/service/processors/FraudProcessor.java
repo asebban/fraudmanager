@@ -193,7 +193,7 @@ public class FraudProcessor {
                 // Note: FraudManagerStarter.init() modifies static global state (RulesConfig), so it's hard to do completely safely without lock.
                 // However, we can try to minimize the critical section or at least handle the failure gracefully.
                 
-                // We will hold the lock for the whole update to prevent inconsistencies since init() is global.
+                // Prevent new processing threads from using drools sessions while the update is being performed
                 rulesReloadLock.writeLock().lock();
                 
                 // Temporary reference to new factory to ensure it can be created
@@ -203,7 +203,7 @@ public class FraudProcessor {
                 try {
                     // This updates global RulesConfig with the requested version
                     FraudManagerStarter.init(payloadVersion); 
-                    
+                    // after init(), RulesConfig.extendedVersion contains the new requested version
                     newSessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
                     
                     // Pre-create sessions to ensure everything is valid
