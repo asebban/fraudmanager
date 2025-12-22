@@ -172,7 +172,7 @@ public class FraudProcessor {
         
         // Save old version for potential rollback
         // RulesConfig.extendedVersion format is usually "Ruleset-Version"
-        String oldVersionFull = RulesConfig.extendedVersion; 
+        String oldVersionFull = RulesConfig.extendedVersion;
 
         // Mark as in-progress (do not start a second reload concurrently).
         boolean started = RuleDeploymentState.begin(payloadVersion);
@@ -182,11 +182,13 @@ public class FraudProcessor {
             return;
         }
 
+        logger.info("Notification of a new rules version deployment : {}", payloadVersion);
+
         while(!reloadOk) {
 
             Long startRulesReload = System.currentTimeMillis();
             String requested = RuleDeploymentState.getRequestedVersionOrUnknown();
-            logger.info("Rules update notification received. Entering temporary unavailable mode. requestedVersion={}", requested);
+            logger.info("Attempt of a new rules version deployment : {}", requested);
 
             try {
                 // 1. Prepare phase (Load config and build factories/sessions outside lock if possible or at least before destroying old ones)
@@ -254,10 +256,10 @@ public class FraudProcessor {
                 logger.debug("Rules reload took {} ms", endRulesReload - startRulesReload);
 
             } catch (Exception e) {
-                logger.error("Rules reload failed; staying in {} mode, retrying in {} seconds", ALERT_UNAVAILABLE, AppConfig.appRulesReloadRetryIntervalSeconds);
+                logger.error("Rules reload failed; staying in {} mode, retrying in {} seconds", ALERT_UNAVAILABLE, AppConfig.appRulesReloadRetryInterval);
                 
                 try {
-                    Thread.sleep(AppConfig.appRulesReloadRetryIntervalSeconds * 1000L);
+                    Thread.sleep(AppConfig.appRulesReloadRetryInterval);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     logger.warn("Retry sleep interrupted");
@@ -296,6 +298,7 @@ public class FraudProcessor {
                             // 2. Revert Redis state
                             DroolBuilderRulePublisher publisher = new DroolBuilderRulePublisher();
                             publisher.deployRuleset(AppConfig.repositoryWorkspaceDirectory, ruleset, version, " -> Redeployment of old version: " + oldVersionFormatted, ma.medtech.Main.providerType);
+                            reloadOk = true; // Exit loop, even though we failed the update
                         } else {
                             logger.error("Could not parse old version string '{}', cannot rollback reliably.", oldVersionFull);
                         }
@@ -306,7 +309,6 @@ public class FraudProcessor {
                         rulesReloadLock.writeLock().unlock();
                     }
                     
-                    reloadOk = true; // Exit loop, even though we failed the update
                 }
             } finally {
                 if (reloadOk) {
