@@ -88,7 +88,7 @@
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>fraudmanager-storage</artifactId>
-            <version>1.0.1-RELEASE</version>
+            <version>1.1.0-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
