@@ -38,9 +38,9 @@
     </logger>
 
     <!-- Reduce noise from libraries (tweak as needed) -->
-    <!--logger name="io.lettuce" level="WARN"/>
+    <logger name="io.lettuce" level="WARN"/>
     <logger name="org.drools" level="INFO"/>
-    <logger name="org.eclipse.jetty" level="WARN"/-->
+    <logger name="org.eclipse.jetty" level="WARN"/>
 
     <!-- Root logger -->
     <root level="${LOG_LEVEL}">

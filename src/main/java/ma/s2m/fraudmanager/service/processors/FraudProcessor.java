@@ -1,12 +1,6 @@
 package ma.s2m.fraudmanager.service.processors;
 
 import ma.medtech.droolbuilder.messaging.IMessageSender;
-import ma.medtech.droolbuilder.publisher.DroolBuilderRulePublisher;
-import ma.medtech.droolbuilder.publisher.providers.DroolBuilderRuleProviderFactory;
-import ma.medtech.droolbuilder.publisher.providers.IDroolBuilderRuleProvider;
-import ma.medtech.droolbuilder.rules.RuleDefinition;
-import ma.medtech.droolbuilder.services.TypeConverter;
-import ma.medtech.droolbuilder.utils.TimeConversion;
 import ma.s2m.auth.Alert;
 import ma.s2m.auth.AlertSet;
 import ma.s2m.auth.FraudCheckRequest;
@@ -41,6 +35,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.Set;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import ma.medtech.droolbuilder.publisher.DroolBuilderRulePublisher;
+import ma.medtech.droolbuilder.rules.RuleDefinition;
+import ma.medtech.droolbuilder.services.TypeConverter;
+import ma.medtech.droolbuilder.utils.TimeConversion;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -337,48 +335,6 @@ public class FraudProcessor {
         return v;
     }
 
-    private void waitUntilVersionActivated(String payloadVersion) {
-        String expectedVersionNumber = extractVersionNumber(payloadVersion);
-        if (expectedVersionNumber == null) {
-            // No payload version => just proceed to reload immediately.
-            return;
-        }
-
-        IDroolBuilderRuleProvider ruleProvider = DroolBuilderRuleProviderFactory.getRuleProvider(ma.medtech.Main.providerType);
-
-        final long timeoutMs = 10 * 60 * 1000L;
-        final long pollMs = 2000L;
-        long start = System.currentTimeMillis();
-
-        while (true) {
-            String deployedVersion = null;
-            try {
-                deployedVersion = ruleProvider.getCurrentlyDeployed(); // format: rulesetId:version
-            } catch (Exception e) {
-                logger.warn("Error while reading currently deployed rules version; will retry", e);
-            }
-
-            if (deployedVersion != null && deployedVersion.contains(":")) {
-                String[] parts = deployedVersion.split(":", 2);
-                String deployedVersionNumber = parts.length == 2 ? parts[1] : null;
-                if (deployedVersionNumber != null && deployedVersionNumber.trim().equals(expectedVersionNumber)) {
-                    return;
-                }
-            }
-
-            if (System.currentTimeMillis() - start > timeoutMs) {
-                throw new IllegalStateException("Timeout waiting for rules version activation: " + expectedVersionNumber);
-            }
-
-            try {
-                Thread.sleep(pollMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("Interrupted while waiting for rules version activation", e);
-            }
-        }
-    }
-
     private void recreateSessionsAfterRulesReload() throws IOException {
         // Dispose and clear existing pools
         sessionPools.values().forEach(queue -> {
@@ -461,12 +417,23 @@ public class FraudProcessor {
 
         if (session != null) {
             try {
-                session.clean(); // Nettoie les faits
-                sessionPools.get(subjectKey).offer(session);
+                if (session.isBroken()) {
+                    logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
+                    try {
+                        session.dispose();
+                    } catch (Exception ignore) {}
+                    // Replace with a fresh session
+                    sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                } else {
+                    session.clean(); // Nettoie les faits
+                    sessionPools.get(subjectKey).offer(session);
+                }
             } catch (Exception e) {
-                logger.error("Error returning session to pool for subject: {}", extendedSubject, e);
-                // Recrée une session en cas d'erreur
-                sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                logger.error("Error returning/replacing session in pool for subject: {}", extendedSubject, e);
+                // Safe guard: ensure pool doesn't shrink
+                try {
+                   sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                } catch (Exception ignore) {}
             }
         }
     }
@@ -1123,13 +1090,16 @@ public class FraudProcessor {
 
         // Guard against concurrent rules reloads while we process.
         rulesReloadLock.readLock().lock();
+        // declared outside inner try block to be accessible in finally
+        List<CompletableFuture<TrxOrAlertEvent>> futures = new java.util.ArrayList<>();
+
         try {
             if (RuleDeploymentState.isInProgress()) {
                 respondUnavailable(msg, correlationId);
                 return;
             }
 
-        try {
+            try {
             // Désérialiser
             long beforeDeserialize = System.currentTimeMillis();
             @SuppressWarnings("unchecked")
@@ -1151,6 +1121,7 @@ public class FraudProcessor {
 
             String cardKey = CARD_KEY_PREFIX + tx.getCardId();
             String merchantKey = MERCHANT_KEY_PREFIX + tx.getMerchant();
+
 
 
             // parallel processing of subjects with CompletableFutures
@@ -1316,7 +1287,6 @@ public class FraudProcessor {
             }
 
             // Attendre que tous les traitements se terminent et récupérer les résultats
-            List<CompletableFuture<TrxOrAlertEvent>> futures = new java.util.ArrayList<>();
             if (cardProcessingFutures != null && !cardProcessingFutures.isEmpty()) {
                 futures.addAll(cardProcessingFutures);
             }
@@ -1327,10 +1297,12 @@ public class FraudProcessor {
                 futures.addAll(customProcessingFutures);
             }
 
-            CompletableFuture<Void> allProcessing = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            allProcessing.join();
-            Long endOfJoin = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Duration of threads completion", endOfJoin - endArrivalTime, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
+            // CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])); // We do this in finally to ensure we wait even if exception
+            // allProcessing.join();
+            Long endOfJoin = System.currentTimeMillis(); // Placeholder, actual time will be measured in finally block or inferred
+            
+            // Wait for completion moved to finally block to ensure lock is held until threads finish
+            // logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Duration of threads completion", endOfJoin - endArrivalTime, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
             // Récupérer les résultats
             AlertSet combinedAlertSet = null;
@@ -1393,6 +1365,22 @@ public class FraudProcessor {
             natsConnection.publish(topic, responseBytes);
         }
         } finally {
+            try {
+                // Ensure we wait for all spawned threads to complete before releasing the lock
+                // This prevents the "IllegalStateException: Dropols session used concurrently" if we release lock early
+                 if (futures != null && !futures.isEmpty()) {
+                    long joinStart = System.currentTimeMillis();
+                    try {
+                        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                    } catch (Exception e) {
+                        logger.error("Error waiting for futures to complete in finally block", e);
+                    }
+                     long joinEnd = System.currentTimeMillis();
+                     logger.debug("Time {} ms [{}] [Thread {}] process(): Duration of threads completion (finally block)", joinEnd - joinStart, correlationId, Thread.currentThread().getName());
+                }
+            } catch (Exception e) {
+                 logger.error("Critical error in finally block while joining futures", e);
+            }
             rulesReloadLock.readLock().unlock();
         }
     }
