@@ -3,7 +3,6 @@ package ma.s2m.fraudmanager.drools;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -33,6 +32,7 @@ final class StatefulDroolsSession implements DroolsSession {
     private RuleProfiler ruleProfiler = new RuleProfiler();
     private String correlationId = "";
     private final AtomicBoolean inUse = new AtomicBoolean(false);
+    private boolean broken = false;
 
     public StatefulDroolsSession(KieSession ks) {
         this.ks = ks;
@@ -144,9 +144,9 @@ final class StatefulDroolsSession implements DroolsSession {
                 }
             }
         } catch (Exception e) {
-            logger.error("Error during fireAllRules execution, correlationId={}, subject={}, trx={} ",
-                    this.correlationId, this.extendedSubject,
-                    m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A", e);
+            this.broken = true;
+            logger.error("Error during fireAllRules execution, correlationId={}, subject={}, trx={}, last rule {}",
+                    this.correlationId, this.extendedSubject, m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A", this.ruleProfiler.getLastRuleName());
         } finally {
             // Always remove inserted facts, even when fireAllRules fails, to prevent corrupt reuse via pool.
             cleanEntryPoints();
@@ -179,10 +179,21 @@ final class StatefulDroolsSession implements DroolsSession {
 
     @Override
     public void clean() {
-        for (Iterator<FactHandle> iterator = ks.getFactHandles().iterator(); iterator.hasNext();) {
-            FactHandle factHandle = iterator.next();
-            ks.delete(factHandle);
+        // More robust cleanup: iterate over all entry points
+        for (EntryPoint ep : ks.getEntryPoints()) {
+            for (FactHandle factHandle : ep.getFactHandles()) {
+                try {
+                    ep.delete(factHandle);
+                } catch (Exception e) {
+                    logger.debug("Failed to delete fact from entry point {}: {}", ep.getEntryPointId(), e.toString());
+                }
+            }
         }
+    }
+
+    @Override
+    public boolean isBroken() {
+        return broken;
     }
 
     // Optionnel : exposer KieSession pour ajouter listeners, channels…

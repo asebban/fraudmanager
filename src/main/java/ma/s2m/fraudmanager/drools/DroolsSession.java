@@ -13,4 +13,5 @@ public interface DroolsSession extends AutoCloseable {
     void removeEventListener(AgendaEventListener eventListener);
     AgendaEventListener getAgendaEventListener();
     void dispose();
+    default boolean isBroken() { return false; }
 }

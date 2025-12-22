@@ -5,7 +5,7 @@
       "type": "java",
       "name": "Main",
       "request": "launch",
-      "mainClass": "ma.s2m.fraudmanager.Main",
+      "mainClass": "ma.s2m.fraudmanager.FraudManagerStarter",
       "projectName": "fraudmanager",
       "args": [
         "--option",
@@ -18,7 +18,7 @@
       "type": "java",
       "name": "Launch FraudManager",
       "request": "launch",
-      "mainClass": "ma.s2m.fraudmanager.Main",
+      "mainClass": "ma.s2m.fraudmanager.FraudManagerStarter",
       "projectName": "FraudManager",
       "vmArgs": "--enable-native-access=ALL-UNNAMED"
     }
