@@ -8,10 +8,11 @@ import java.util.Properties;
 public class PropertiesLoader {
 
 	private final String propertiesFileName;
-	private final Properties properties = new Properties();
+	private Properties properties = new Properties();
 
 	public PropertiesLoader(String propertiesFileName) {
 		this.propertiesFileName = Objects.requireNonNull(propertiesFileName, "fraudmanager.properties");
+		this.properties = loadFromClasspath();
 	}
 
 	/**
@@ -20,7 +21,9 @@ public class PropertiesLoader {
 	 * @return les {@link Properties} chargées
 	 */
 	public Properties loadFromClasspath() {
-		properties.clear();
+		if (properties != null) {
+			properties.clear();
+		}
 
 		ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
 		if (classLoader == null) {
