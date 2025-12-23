@@ -135,10 +135,7 @@ final class StatefulDroolsSession implements DroolsSession {
             } else {
                 Long t0 = System.nanoTime();
                 ks.fireAllRules();
-                logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}",
-                        (System.nanoTime() - t0) / 1_000_000, formattedDuration,
-                        m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
-
+                logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}", (System.nanoTime() - t0) / 1_000_000, formattedDuration, m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
                 if (droolsProfilerEnabled) {
                     this.ruleProfiler.reportTop(10).forEach(logger::debug);
                 }

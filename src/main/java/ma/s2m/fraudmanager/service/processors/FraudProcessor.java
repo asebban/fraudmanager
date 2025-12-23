@@ -417,7 +417,10 @@ public class FraudProcessor {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
 
-        if (session != null) {
+        session.clean(); // Nettoie les faits
+        sessionPools.get(subjectKey).offer(session);
+
+        /*if (session != null) {
             try {
                 if (session.isBroken()) {
                     logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
@@ -437,7 +440,7 @@ public class FraudProcessor {
                    sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
                 } catch (Exception ignore) {}
             }
-        }
+        }*/
     }
 
     /**
