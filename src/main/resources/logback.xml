@@ -20,7 +20,7 @@
         <file>${APP_LOG_DIR}/${APP_NAME}.log</file>
         <append>true</append>
         <encoder>
-            <pattern>%replace(%logger){'^(?:.*\\.)?([^.]*)$','$1'} %-5level %msg%n</pattern>
+            <pattern>%d{HH:mm:ss} %replace(%logger){'^(?:.*\\.)?([^.]*)$','$1'} %-5level %msg%n</pattern>
             <charset>UTF-8</charset>
         </encoder>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
