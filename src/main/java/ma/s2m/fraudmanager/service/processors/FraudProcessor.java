@@ -58,6 +58,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ma.s2m.fraudmanager.metrics.FraudManagerMetrics;
+import io.micrometer.core.instrument.Timer;
 
 public class FraudProcessor {
 
@@ -441,9 +443,25 @@ public class FraudProcessor {
             measurment.setAlertSet(new AlertSet());
         }
         DroolsSession session = null;
+        FraudManagerMetrics metrics = FraudManagerMetrics.getInstance();
+        Timer.Sample droolsTimer = null;
+        Timer.Sample acquireTimer = null;
+        
         try {
+            if (metrics != null) {
+                acquireTimer = metrics.startSessionAcquireTimer();
+            }
             session = acquireSession(extendedSubject, measurment.getWindowSize(), measurment.getKey(), correlationId);
+            if (metrics != null && acquireTimer != null) {
+                metrics.recordSessionAcquireTime(acquireTimer);
+                droolsTimer = metrics.startDroolsTimer();
+            }
+            
             session.execute(measurment, extendedSubject, correlationId);
+            
+            if (metrics != null && droolsTimer != null) {
+                metrics.recordDroolsTime(droolsTimer);
+            }
         } catch (Exception e) {
             logger.error("Error executing session for subject: {}, key {}, windowSize {}, measurment {}, correlationId [{}]", extendedSubject, measurment.getKey(), measurment.getWindowSize(), measurment, correlationId, e);
         } finally {
@@ -1086,10 +1104,16 @@ public class FraudProcessor {
 
             try {
             // Désérialiser
+            FraudManagerMetrics deserMetrics = FraudManagerMetrics.getInstance();
+            Timer.Sample deserializeTimer = deserMetrics != null ? deserMetrics.startSerializationTimer() : null;
             long beforeDeserialize = System.currentTimeMillis();
             @SuppressWarnings("unchecked")
             FraudCheckRequest<ITransaction> request = (FraudCheckRequest<ITransaction>) SerializationManager.deserialize(msg.getData());
             long afterDeserialize = System.currentTimeMillis();
+            if (deserMetrics != null && deserializeTimer != null) {
+                deserMetrics.recordSerializationTime(deserializeTimer);
+                deserMetrics.incrementDeserializationOperations();
+            }
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Deserialization Time", (afterDeserialize - beforeDeserialize), correlationId, Thread.currentThread().getName(), request.getContent().getTransactionNo());
 
             VRTransactionSummary tx = new VRTransactionSummary(request.getContent());
@@ -1291,6 +1315,7 @@ public class FraudProcessor {
 
             // Récupérer les résultats
             AlertSet combinedAlertSet = null;
+            FraudManagerMetrics metrics = FraudManagerMetrics.getInstance();
 
             try {
                 for (CompletableFuture<TrxOrAlertEvent> future : futures) {
@@ -1310,6 +1335,35 @@ public class FraudProcessor {
 
             combinedAlertSet.setTransactionNo(tx.getTransactionNo());
             
+            // Record alert metrics
+            if (metrics != null && combinedAlertSet != null) {
+                if (combinedAlertSet.hasAlerts() && combinedAlertSet.getAlerts() != null) {
+                    int alertCount = combinedAlertSet.getAlerts().size();
+                    metrics.incrementAlertsGenerated(alertCount);
+                    metrics.recordAlertScore(combinedAlertSet.getScore() != null ? combinedAlertSet.getScore() : 0.0);
+                    
+                    // Track alerts by rule
+                    for (Alert alert : combinedAlertSet.getAlerts()) {
+                        if (alert.getRuleTitle() != null) {
+                            metrics.incrementAlertsByRule(alert.getRuleTitle());
+                        }
+                    }
+                }
+                
+                // Record transaction amount if available
+                if (tx.getAmount() != null) {
+                    metrics.recordTransactionAmount(tx.getAmount());
+                }
+                
+                // Track by subject
+                if (RulesConfig.cardSubjectPresent) {
+                    metrics.incrementTransactionsBySubject(Subject.CARD);
+                }
+                if (RulesConfig.merchantSubjectPresent) {
+                    metrics.incrementTransactionsBySubject(Subject.MERCHANT);
+                }
+            }
+            
             Long resultAgregationEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [Thread {}] trx={} duration of results aggregation", (resultAgregationEnd - endOfJoin), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
@@ -1321,9 +1375,15 @@ public class FraudProcessor {
             response.setErrorMessage(NO_ERROR_MESSAGE);
 
             // Sérialiser et publier réponse
+            Timer.Sample serializeTimer = metrics != null ? metrics.startSerializationTimer() : null;
             Long beforeSerialize = System.currentTimeMillis();
             byte[] responseBytes = SerializationManager.serialize(response);
             Long afterSerialize = System.currentTimeMillis();
+            if (metrics != null && serializeTimer != null) {
+                metrics.recordSerializationTime(serializeTimer);
+                metrics.incrementSerializationOperations();
+                metrics.incrementNatsMessagesSent();
+            }
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Serialization Time", (afterSerialize - beforeSerialize), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
             natsConnection.publish(topic, responseBytes);
 

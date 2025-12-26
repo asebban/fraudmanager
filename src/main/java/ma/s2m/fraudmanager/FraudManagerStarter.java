@@ -12,6 +12,7 @@ import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.fraudmanager.metrics.Metrics;
 import ma.s2m.fraudmanager.metrics.MetricsServer;
+import ma.s2m.fraudmanager.metrics.FraudManagerMetrics;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -24,11 +25,17 @@ import java.util.StringJoiner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
+import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
+
 public class FraudManagerStarter {
     private static final Logger logger = LoggerFactory.getLogger(FraudManagerStarter.class);
     private static NatsService natsService;
     private static boolean metricsStarted = false;
 
+    @SuppressWarnings("resource")
     public static void main(String[] args) {
         addShutdownHook();
 
@@ -36,9 +43,15 @@ public class FraudManagerStarter {
             AppConfig config = new AppConfig(args);
             if (AppConfig.metricsEnabled) {
                 var registry = MetricsServer.start(AppConfig.metricsPort, AppConfig.metricsPath);
+                new JvmMemoryMetrics().bindTo(registry);
+                new JvmGcMetrics().bindTo(registry);
+                new JvmThreadMetrics().bindTo(registry);
+                new ProcessorMetrics().bindTo(registry);
+
                 if (registry != null) {
                     registry.config().commonTags("app", "fraudmanager", "node", AppConfig.nodeName);
                     Metrics.setRegistry(registry);
+                    FraudManagerMetrics.init(registry);
                     metricsStarted = true;
                 }
             }
@@ -120,6 +133,12 @@ public class FraudManagerStarter {
         logger.debug("Total alert rules: " + alertRulesCount);
 
         RulesConfig.alertRulesCount = alertRulesCount;
+        
+        // Update metrics with rules count
+        FraudManagerMetrics metricsInstance = FraudManagerMetrics.getInstance();
+        if (metricsInstance != null) {
+            metricsInstance.setActiveRulesCount(rules.size());
+        }
         RulesConfig.rulesMapForCardSubject = new HashMap<>();
         RulesConfig.rulesMapForMerchantSubject = new HashMap<>();
         RulesConfig.rulesMapForCustomSubject = new HashMap<>();
