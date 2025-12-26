@@ -381,6 +381,11 @@ public class FraudProcessor {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
 
+        // TEMPORARY FIX: Disable pooling to avoid IllegalStateException (corruption of stateful session)
+        // We create a fresh session every time.
+        // NOTE: This might impact performance, but ensures stability.
+        
+        /*
         Long beginAcquireSession = System.currentTimeMillis();
         BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
         if (pool == null) {
@@ -390,6 +395,9 @@ public class FraudProcessor {
         Long endAcquireSession = System.currentTimeMillis();
         logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
         return session;
+        */
+        
+        return createSessionForSubject(subjectKey, this.sessionFactory);
     }
 
     private void releaseSession(String extendedSubject, DroolsSession session) {
@@ -398,11 +406,18 @@ public class FraudProcessor {
         if (extendedSubject.contains(KEY_SEPARATOR)) {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
+        
+        // TEMPORARY FIX: Always dispose session, do not return to pool.
+        if (session != null) {
+            try {
+                session.dispose();
+            } catch (Exception e) {
+                 logger.error("Error disposing session for subject: {}", extendedSubject, e);
+            }
+        }
 
-        session.clean(); // Nettoie les faits
-        sessionPools.get(subjectKey).offer(session);
-
-        /*if (session != null) {
+        /*
+        if (session != null) {
             try {
                 if (session.isBroken()) {
                     logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
@@ -422,7 +437,8 @@ public class FraudProcessor {
                    sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
                 } catch (Exception ignore) {}
             }
-        }*/
+        }
+        */
     }
 
     /**

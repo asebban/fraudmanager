@@ -144,6 +144,7 @@ final class StatefulDroolsSession implements DroolsSession {
             this.broken = true;
             logger.error("Error during fireAllRules execution, correlationId={}, subject={}, trx={}, last rule {}",
                     this.correlationId, this.extendedSubject, m != null && m.getTransaction() != null ? m.getTransaction().getTransactionNo() : "N/A", this.ruleProfiler.getLastRuleName());
+            e.printStackTrace();
         } finally {
             // Always remove inserted facts, even when fireAllRules fails, to prevent corrupt reuse via pool.
             cleanEntryPoints();
