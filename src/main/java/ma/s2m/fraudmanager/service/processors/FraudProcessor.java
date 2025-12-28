@@ -58,6 +58,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ma.s2m.fraudmanager.metrics.FraudManagerMetrics;
+import io.micrometer.core.instrument.Timer;
 
 public class FraudProcessor {
 
@@ -473,9 +475,25 @@ public class FraudProcessor {
             measurment.setAlertSet(new AlertSet());
         }
         DroolsSession session = null;
+        FraudManagerMetrics metrics = FraudManagerMetrics.getInstance();
+        Timer.Sample droolsTimer = null;
+        Timer.Sample acquireTimer = null;
+        
         try {
+            if (metrics != null) {
+                acquireTimer = metrics.startSessionAcquireTimer();
+            }
             session = acquireSession(extendedSubject, measurment.getWindowSize(), measurment.getKey(), correlationId);
+            if (metrics != null && acquireTimer != null) {
+                metrics.recordSessionAcquireTime(acquireTimer);
+                droolsTimer = metrics.startDroolsTimer();
+            }
+            
             session.execute(measurment, extendedSubject, correlationId);
+            
+            if (metrics != null && droolsTimer != null) {
+                metrics.recordDroolsTime(droolsTimer);
+            }
         } catch (Exception e) {
             logger.error("Error executing session for subject: {}, key {}, windowSize {}, measurment {}, correlationId [{}]", extendedSubject, measurment.getKey(), measurment.getWindowSize(), measurment, correlationId, e);
         } finally {
@@ -1133,8 +1151,10 @@ public class FraudProcessor {
 
             long clientTs = sClientTs != null ? Long.parseLong(sClientTs) : 0L;
             long recvTs = sRecvTs != null ? Long.parseLong(sRecvTs) : recv0;
-            long publishToReceiveMs = recvTs - clientTs;
-            logger.debug("Time {} ms [{}] [Thread {}] trx={} Nats: Time between API publish and fraudmanager reception", publishToReceiveMs, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
+            if (clientTs > 0) {
+                long publishToReceiveMs = recvTs - clientTs;
+                logger.debug("Time {} ms [{}] [Thread {}] trx={} Nats: Time between API publish and fraudmanager reception", publishToReceiveMs, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
+            }
 
             String cardKey = CARD_KEY_PREFIX + tx.getCardId();
             String merchantKey = MERCHANT_KEY_PREFIX + tx.getMerchant();
