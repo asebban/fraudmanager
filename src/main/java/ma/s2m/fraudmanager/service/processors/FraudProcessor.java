@@ -388,6 +388,7 @@ public class FraudProcessor {
         }
 
         this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
+        logger.info("FraudProcessor initialized. Drools Session Pooling Enabled: {}", AppConfig.appDroolsSessionPoolingEnabled);
     }
 
     private DroolsSession acquireSession(String extendedSubject, Long windowSize, String key, String correlationId) throws InterruptedException {
@@ -397,15 +398,20 @@ public class FraudProcessor {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
 
-        Long beginAcquireSession = System.currentTimeMillis();
-        BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
-        if (pool == null) {
-            throw new IllegalArgumentException("No session pool for subject: " + extendedSubject);
+        if (AppConfig.appDroolsSessionPoolingEnabled) {
+            Long beginAcquireSession = System.currentTimeMillis();
+            BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
+            if (pool == null) {
+                throw new IllegalArgumentException("No session pool for subject: " + extendedSubject);
+            }
+            DroolsSession session = pool.take(); // Bloque si vide
+            Long endAcquireSession = System.currentTimeMillis();
+            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
+            return session;
+        } else {
+             // Create fresh session if pooling is disabled
+             return createSessionForSubject(subjectKey, this.sessionFactory);
         }
-        DroolsSession session = pool.take(); // Bloque si vide
-        Long endAcquireSession = System.currentTimeMillis();
-        logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
-        return session;
     }
 
     private void releaseSession(String extendedSubject, DroolsSession session) {
@@ -417,23 +423,34 @@ public class FraudProcessor {
 
         if (session != null) {
             try {
-                if (session.isBroken()) {
-                    logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
+                if (AppConfig.appDroolsSessionPoolingEnabled) {
+                    if (session.isBroken()) {
+                        logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
+                        try {
+                            session.dispose();
+                        } catch (Exception ignore) {}
+                        // Replace with a fresh session
+                        sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                    } else {
+                        session.clean(); // Nettoie les faits
+                        sessionPools.get(subjectKey).offer(session);
+                    }
+                } else {
+                    // Dispose immediately if pooling is disabled
                     try {
                         session.dispose();
                     } catch (Exception ignore) {}
-                    // Replace with a fresh session
-                    sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
-                } else {
-                    session.clean(); // Nettoie les faits
-                    sessionPools.get(subjectKey).offer(session);
                 }
             } catch (Exception e) {
-                logger.error("Error returning/replacing session in pool for subject: {}", extendedSubject, e);
-                // Safe guard: ensure pool doesn't shrink
-                try {
-                   sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
-                } catch (Exception ignore) {}
+                if (AppConfig.appDroolsSessionPoolingEnabled) {
+                    logger.error("Error returning/replacing session in pool for subject: {}", extendedSubject, e);
+                    // Safe guard: ensure pool doesn't shrink
+                    try {
+                       sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                    } catch (Exception ignore) {}
+                } else {
+                    logger.error("Error disposing session: {}", e.getMessage());
+                }
             }
         }
     }
