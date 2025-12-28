@@ -317,26 +317,6 @@ public class FraudProcessor {
         }
     }
 
-    private static String extractVersionNumber(String versionLabel) {
-        if (versionLabel == null) {
-            return null;
-        }
-        String v = versionLabel.trim();
-        if (v.isBlank()) {
-            return null;
-        }
-        // Accept either "<version>", "<ruleset>-<version>", or "<ruleset>:<version>"
-        if (v.contains(":")) {
-            String[] parts = v.split(":", 2);
-            return parts.length == 2 ? parts[1].trim() : v;
-        }
-        int dash = v.indexOf('-');
-        if (dash > 0 && dash < v.length() - 1) {
-            return v.substring(dash + 1).trim();
-        }
-        return v;
-    }
-
     private void recreateSessionsAfterRulesReload() throws IOException {
         // Dispose and clear existing pools
         sessionPools.values().forEach(queue -> {
