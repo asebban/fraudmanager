@@ -906,7 +906,9 @@ public class FraudProcessor {
         logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
         // Set the current transaction in the measurment for drools processing        
-        measurment.setTransaction(transaction);
+        // Defensive copy: Clone the measurment for Drools execution to avoid polluting the session with stale objects
+        Measurment droolsMeasurment = measurment.clone();
+        droolsMeasurment.setTransaction(transaction);
 
         try {
             // update the indicators in the measurment (with drools)
@@ -917,11 +919,20 @@ public class FraudProcessor {
                 extendedSubject = Subject.CUSTOM + KEY_SEPARATOR + measurment.getCustomSubject();
             }
 
-            if (measurment.getGlobalRecords() == null) {
-                measurment.setGlobalRecords(new RecordHashMap());
+            if (droolsMeasurment.getGlobalRecords() == null) {
+                droolsMeasurment.setGlobalRecords(new RecordHashMap());
             }
 
-            executeSession(measurment, extendedSubject, correlationId);
+            executeSession(droolsMeasurment, extendedSubject, correlationId);
+
+            // Merge changes back from droolsMeasurment to original measurment
+            measurment.setAlertSet(droolsMeasurment.getAlertSet());
+            measurment.setRecords(droolsMeasurment.getRecords());
+            measurment.setGlobalRecords(droolsMeasurment.getGlobalRecords());
+            measurment.setLasts(droolsMeasurment.getLasts());
+            measurment.setLastsCount(droolsMeasurment.getLastsCount());
+            measurment.setTrxEntries(droolsMeasurment.getTrxEntries());
+            measurment.setDirty(droolsMeasurment.getDirty());
             Long endExecute = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration", (endExecute - beginExecute), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
 
@@ -1001,7 +1012,9 @@ public class FraudProcessor {
         }
 
         // Set the current transaction in the measurment for drools processing
-        wm.getMeasurment().setTransaction(trx);
+        // Defensive copy for Fixed Window
+        Measurment droolsMeasurment = wm.getMeasurment().clone();
+        droolsMeasurment.setTransaction(trx);
 
         long t0 = System.nanoTime();
         Long tend = t0;
@@ -1012,7 +1025,16 @@ public class FraudProcessor {
             }
 
             // update the indicators in the measurment (with drools)
-            executeSession(wm.getMeasurment(), extendedSubject, correlationId);
+            executeSession(droolsMeasurment, extendedSubject, correlationId);
+
+            // Merge back
+            wm.getMeasurment().setAlertSet(droolsMeasurment.getAlertSet());
+            wm.getMeasurment().setRecords(droolsMeasurment.getRecords());
+            wm.getMeasurment().setGlobalRecords(droolsMeasurment.getGlobalRecords());
+            wm.getMeasurment().setLasts(droolsMeasurment.getLasts());
+            wm.getMeasurment().setLastsCount(droolsMeasurment.getLastsCount());
+            wm.getMeasurment().setTrxEntries(droolsMeasurment.getTrxEntries());
+            wm.getMeasurment().setDirty(droolsMeasurment.getDirty());
         } catch (Exception e) {
             logger.error("Error inserting and executing transaction in session: {}", e.getMessage());
             e.printStackTrace();

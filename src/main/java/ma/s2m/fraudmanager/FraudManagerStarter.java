@@ -12,7 +12,6 @@ import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.fraudmanager.util.Subject;
 import ma.s2m.fraudmanager.metrics.Metrics;
 import ma.s2m.fraudmanager.metrics.MetricsServer;
-import ma.s2m.fraudmanager.metrics.FraudManagerMetrics;
 
 import java.util.ArrayList;
 import java.util.HashMap;

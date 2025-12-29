@@ -66,7 +66,7 @@ public class AppConfig {
     public static String metricsPath = "/metrics";
     public static int appRulesReloadRetryIntervalSeconds = 1;
     public static int appRulesReloadMaxRetries = 3;
-    public static Boolean appDroolsSessionPoolingEnabled = false;
+    public static Boolean appDroolsSessionPoolingEnabled = true;
 
     public AppConfig(String[] args) throws Exception {
 
@@ -116,7 +116,7 @@ public class AppConfig {
         metricsPath = centralRepository.getProperty("metrics.path", "/metrics");
         appRulesReloadRetryIntervalSeconds = Integer.parseInt(centralRepository.getProperty("app.rules.reload.retry.interval.seconds", "1"));
         appRulesReloadMaxRetries = Integer.parseInt(centralRepository.getProperty("app.rules.reload.max.retries", "3"));
-        appDroolsSessionPoolingEnabled = Boolean.parseBoolean(centralRepository.getProperty("app.drools.session.pooling.enabled", "false"));
+        appDroolsSessionPoolingEnabled = Boolean.parseBoolean(centralRepository.getProperty("app.drools.session.pooling.enabled", "true"));
 
         String shardsProp = centralRepository.getProperty("storage." + nodeName + ".shards", "0");
         if (shardsProp != null && !shardsProp.isEmpty()) {
