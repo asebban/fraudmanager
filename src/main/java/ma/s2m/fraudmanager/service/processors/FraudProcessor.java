@@ -612,41 +612,37 @@ public class FraudProcessor {
      * @param trxEntry The transaction entry containing delta values.
      */
     private void substractDelta(Measurment m, TrxEntry trxEntry) {
-
         if (trxEntry == null) {
             return;
         }
 
-        if (m.getRecords() != null && !m.getRecords().isEmpty()) {
+        if (trxEntry.getRecordDelta() != null && !trxEntry.getRecordDelta().isEmpty()) {
+            for (Map.Entry<String, RecordsDelta> entry : trxEntry.getRecordDelta().entrySet()) {
+                String recordKey = entry.getKey();
+                RecordsDelta delta = entry.getValue();
+                MeasurmentRecord record = m.getRecords().peek(recordKey);
 
-            for (String recordKey : m.getRecords().keySet()) {
-                MeasurmentRecord record = m.getRecords().get(recordKey);
+                if (record != null) {
+                    record.setCount(record.getCount() - delta.getCountDelta());
+                    record.setAmount(record.getAmount() - delta.getAmountDelta());
 
-                if (trxEntry.getRecordDelta() != null && trxEntry.getRecordDelta().get(recordKey) != null) {
-
-                    record.setCount(record.getCount() - trxEntry.getRecordDelta().get(recordKey).getCountDelta());
-                    record.setAmount(record.getAmount() - trxEntry.getRecordDelta().get(recordKey).getAmountDelta());
-
-                    for (Entry<String, Object> entry : trxEntry.getRecordDelta().get(recordKey).getValuesDelta()
-                            .entrySet()) {
-                        String attrKey = entry.getKey();
-                        substractDoubleValue(entry, record, attrKey);
-                        substractLongValue(entry, record, attrKey);
-                        substractIntegerValue(entry, record, attrKey);
+                    if (delta.getValuesDelta() != null) {
+                        for (Entry<String, Object> valEntry : delta.getValuesDelta().entrySet()) {
+                            String attrKey = valEntry.getKey();
+                            substractDoubleValue(valEntry, record, attrKey);
+                            substractLongValue(valEntry, record, attrKey);
+                            substractIntegerValue(valEntry, record, attrKey);
+                        }
                     }
 
-                    if (trxEntry.getRecordDelta().get(recordKey).getArgSetDelta() != null
-                            && trxEntry.getRecordDelta().get(recordKey).getArgSetDelta() != null
-                            && !trxEntry.getRecordDelta().get(recordKey).getArgSetDelta().isEmpty()) {
-                        for (String argToRemove : trxEntry.getRecordDelta().get(recordKey).getArgSetDelta()) {
+                    if (delta.getArgSetDelta() != null && !delta.getArgSetDelta().isEmpty()) {
+                        for (String argToRemove : delta.getArgSetDelta()) {
                             record.removeFromArgSet(argToRemove);
                         }
                     }
 
-                    if (trxEntry.getRecordDelta().get(recordKey).getArgListDelta() != null
-                            && trxEntry.getRecordDelta().get(recordKey).getArgListDelta() != null
-                            && !trxEntry.getRecordDelta().get(recordKey).getArgListDelta().isEmpty()) {
-                        for (String argToRemove : trxEntry.getRecordDelta().get(recordKey).getArgListDelta()) {
+                    if (delta.getArgListDelta() != null && !delta.getArgListDelta().isEmpty()) {
+                        for (String argToRemove : delta.getArgListDelta()) {
                             record.removeFromArgList(argToRemove);
                         }
                     }
@@ -689,12 +685,15 @@ public class FraudProcessor {
                 String recordKey = entry.getKey();
                 MeasurmentRecord record = entry.getValue();
 
-                deltas.put(recordKey, new RecordsDelta());
-                deltas.get(recordKey).setCountDelta(record.getCount());
-                deltas.get(recordKey).setAmountDelta(record.getAmount());
-                deltas.get(recordKey).setValuesDelta(new HashMap<>(record.getValues()));
-                deltas.get(recordKey).setArgListDelta(new ArrayList<>(record.getArgList()));
-                deltas.get(recordKey).setArgSetDelta(new HashSet<>(record.getArgSet()));
+                if (record.getCount() != 0 || record.getAmount() != 0.0 || !record.getValues().isEmpty() || !record.getArgList().isEmpty() || !record.getArgSet().isEmpty()) {
+                    RecordsDelta rd = new RecordsDelta();
+                    rd.setCountDelta(record.getCount());
+                    rd.setAmountDelta(record.getAmount());
+                    rd.setValuesDelta(new HashMap<>(record.getValues()));
+                    rd.setArgListDelta(new ArrayList<>(record.getArgList()));
+                    rd.setArgSetDelta(new HashSet<>(record.getArgSet()));
+                    deltas.put(recordKey, rd);
+                }
             }
 
             return deltas;
@@ -705,72 +704,52 @@ public class FraudProcessor {
             MeasurmentRecord finalRecord = entry.getValue();
             MeasurmentRecord initialRecord = initialMeasurment.getRecords().peek(recordKey);
 
-            if (initialRecord == null) {
-                deltas.put(recordKey, new RecordsDelta());
-                deltas.get(recordKey).setCountDelta(finalRecord.getCount());
-                deltas.get(recordKey).setAmountDelta(finalRecord.getAmount());
-                deltas.get(recordKey).setValuesDelta(safeSnapshotMap(finalRecord.getValues()));
-                deltas.get(recordKey).setArgListDelta(new ArrayList<>(safeSnapshotList(finalRecord.getArgList())));
-                deltas.get(recordKey).setArgSetDelta(new HashSet<>(safeSnapshotSet(finalRecord.getArgSet())));
-            } else {
-                deltas.put(recordKey, new RecordsDelta());
-                deltas.get(recordKey).setCountDelta(
-                        finalRecord.getCount() - (initialRecord.getCount() == null ? 0L : initialRecord.getCount()));
-                deltas.get(recordKey).setAmountDelta(finalRecord.getAmount()
-                        - (initialRecord.getAmount() == null ? 0.0 : initialRecord.getAmount()));
+            long countDelta = finalRecord.getCount() - (initialRecord != null ? (initialRecord.getCount() == null ? 0L : initialRecord.getCount()) : 0L);
+            double amountDelta = finalRecord.getAmount() - (initialRecord != null ? (initialRecord.getAmount() == null ? 0.0 : initialRecord.getAmount()) : 0.0);
 
-                Map<String, Object> valuesDelta=null;
-                Map<String, Object> finalValuesSnapshot = safeSnapshotMap(finalRecord.getValues());
-                if (!finalValuesSnapshot.isEmpty()) {
-                    valuesDelta = new HashMap<>(10);
-                    for (Entry<String, Object> valueEntry : finalValuesSnapshot.entrySet()) {
-                        String attrKey = valueEntry.getKey();
-                        Object finalValue = valueEntry.getValue();
-                        Object initialValue = initialRecord.getValues() != null ? initialRecord.getValues().get(attrKey) : null;
-                        if (finalValue instanceof Double) {
-                            Double deltaValue = (Double) finalValue
-                                - (initialValue != null && initialValue instanceof Double ? (Double) initialValue
-                                        : 0.0);
-                            if (deltaValue != 0.0) {
-                                valuesDelta.put(attrKey, deltaValue);
-                            }
-                        } else if (finalValue instanceof Long) {
-                            Long deltaValue = (Long) finalValue
-                                    - (initialValue != null && initialValue instanceof Long ? (Long) initialValue : 0L);
-                            if (deltaValue != 0L) {
-                                valuesDelta.put(attrKey, deltaValue);
-                            }
-                        } else if (finalValue instanceof Integer) {
-                            Integer deltaValue = (Integer) finalValue
-                                    - (initialValue != null && initialValue instanceof Integer ? (Integer) initialValue
-                                            : 0);
-                            if (deltaValue != 0) {
-                                valuesDelta.put(attrKey, deltaValue);
-                            }
-                        }
+            Map<String, Object> valuesDelta = null;
+            Map<String, Object> finalValuesSnapshot = safeSnapshotMap(finalRecord.getValues());
+            if (!finalValuesSnapshot.isEmpty()) {
+                valuesDelta = new HashMap<>(10);
+                for (Entry<String, Object> valueEntry : finalValuesSnapshot.entrySet()) {
+                    String attrKey = valueEntry.getKey();
+                    Object finalValue = valueEntry.getValue();
+                    Object initialValue = initialRecord != null && initialRecord.getValues() != null ? initialRecord.getValues().get(attrKey) : null;
+                    if (finalValue instanceof Double) {
+                        Double deltaValue = (Double) finalValue - (initialValue instanceof Double ? (Double) initialValue : 0.0);
+                        if (deltaValue != 0.0) valuesDelta.put(attrKey, deltaValue);
+                    } else if (finalValue instanceof Long) {
+                        Long deltaValue = (Long) finalValue - (initialValue instanceof Long ? (Long) initialValue : 0L);
+                        if (deltaValue != 0L) valuesDelta.put(attrKey, deltaValue);
+                    } else if (finalValue instanceof Integer) {
+                        Integer deltaValue = (Integer) finalValue - (initialValue instanceof Integer ? (Integer) initialValue : 0);
+                        if (deltaValue != 0) valuesDelta.put(attrKey, deltaValue);
                     }
                 }
-                deltas.get(recordKey).setValuesDelta(valuesDelta);
+                if (valuesDelta.isEmpty()) valuesDelta = null;
             }
 
-            Set<String> initialArgSet = initialRecord != null && initialRecord.getArgSet() != null
-                    ? safeSnapshotSet(initialRecord.getArgSet())
-                    : new HashSet<>();
-            Set<String> finalArgSet = finalRecord != null && finalRecord.getArgSet() != null ? finalRecord.getArgSet()
-                    : new HashSet<>();
-            Set<String> argSetDelta = new HashSet<>(safeSnapshotSet(finalArgSet));
-            argSetDelta.removeAll(initialArgSet);
-            deltas.get(recordKey).setArgSetDelta(argSetDelta);
+            Set<String> argSetDelta = new HashSet<>(safeSnapshotSet(finalRecord.getArgSet()));
+            if (initialRecord != null && initialRecord.getArgSet() != null) {
+                argSetDelta.removeAll(initialRecord.getArgSet());
+            }
+            if (argSetDelta.isEmpty()) argSetDelta = null;
 
-            List<String> initialArgList = initialRecord != null && initialRecord.getArgList() != null
-                    ? safeSnapshotList(initialRecord.getArgList())
-                    : new ArrayList<>();
-            List<String> finalArgList = finalRecord != null && finalRecord.getArgList() != null
-                    ? finalRecord.getArgList()
-                    : new ArrayList<>();
-            List<String> argListDelta = new ArrayList<>(safeSnapshotList(finalArgList));
-            argListDelta.removeAll(initialArgList);
-            deltas.get(recordKey).setArgListDelta(argListDelta);
+            List<String> argListDelta = new ArrayList<>(safeSnapshotList(finalRecord.getArgList()));
+            if (initialRecord != null && initialRecord.getArgList() != null) {
+                argListDelta.removeAll(initialRecord.getArgList());
+            }
+            if (argListDelta.isEmpty()) argListDelta = null;
+
+            if (countDelta != 0 || amountDelta != 0.0 || valuesDelta != null || argSetDelta != null || argListDelta != null) {
+                RecordsDelta rd = new RecordsDelta();
+                rd.setCountDelta(countDelta);
+                rd.setAmountDelta(amountDelta);
+                rd.setValuesDelta(valuesDelta);
+                rd.setArgSetDelta(argSetDelta != null ? argSetDelta : new HashSet<>());
+                rd.setArgListDelta(argListDelta != null ? argListDelta : new ArrayList<>());
+                deltas.put(recordKey, rd);
+            }
         }
 
         return deltas;
@@ -906,13 +885,13 @@ public class FraudProcessor {
         }
 
         Long cloneStart = System.currentTimeMillis();
-        Measurment initialMeasurment = measurment.clone();
+        Measurment initialMeasurment = measurment.clone(false);
         Long cloneEnd = System.currentTimeMillis();
         logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
         // Set the current transaction in the measurment for drools processing        
         // Defensive copy: Clone the measurment for Drools execution to avoid polluting the session with stale objects
-        Measurment droolsMeasurment = measurment.clone();
+        Measurment droolsMeasurment = measurment.clone(true);
         droolsMeasurment.setTransaction(transaction);
 
         try {
@@ -936,7 +915,6 @@ public class FraudProcessor {
             measurment.setGlobalRecords(droolsMeasurment.getGlobalRecords());
             measurment.setLasts(droolsMeasurment.getLasts());
             measurment.setLastsCount(droolsMeasurment.getLastsCount());
-            measurment.setTrxEntries(droolsMeasurment.getTrxEntries());
             measurment.setDirty(droolsMeasurment.getDirty());
             Long endExecute = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration", (endExecute - beginExecute), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
