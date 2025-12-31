@@ -41,9 +41,11 @@ import ma.medtech.droolbuilder.services.TypeConverter;
 import ma.medtech.droolbuilder.utils.TimeConversion;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -170,7 +172,7 @@ public class FraudProcessor {
         
         // Save old version for potential rollback
         // RulesConfig.extendedVersion format is usually "Ruleset-Version"
-        String oldVersionFull = RulesConfig.extendedVersion; 
+        String oldVersionFull = RulesConfig.extendedVersion;
 
         // Mark as in-progress (do not start a second reload concurrently).
         boolean started = RuleDeploymentState.begin(payloadVersion);
@@ -180,11 +182,13 @@ public class FraudProcessor {
             return;
         }
 
+        logger.info("Notification of a new rules version deployment : {}", payloadVersion);
+
         while(!reloadOk) {
 
             Long startRulesReload = System.currentTimeMillis();
             String requested = RuleDeploymentState.getRequestedVersionOrUnknown();
-            logger.info("Rules update notification received. Entering temporary unavailable mode. requestedVersion={}", requested);
+            logger.info("Attempt of a new rules version deployment : {}", requested);
 
             try {
                 // 1. Prepare phase (Load config and build factories/sessions outside lock if possible or at least before destroying old ones)
@@ -252,10 +256,10 @@ public class FraudProcessor {
                 logger.debug("Rules reload took {} ms", endRulesReload - startRulesReload);
 
             } catch (Exception e) {
-                logger.error("Rules reload failed; staying in {} mode, retrying in {} seconds", ALERT_UNAVAILABLE, AppConfig.appRulesReloadRetryIntervalSeconds);
+                logger.error("Rules reload failed; staying in {} mode, retrying in {} seconds", ALERT_UNAVAILABLE, AppConfig.appRulesReloadRetryInterval);
                 
                 try {
-                    Thread.sleep(AppConfig.appRulesReloadRetryIntervalSeconds * 1000L);
+                    Thread.sleep(AppConfig.appRulesReloadRetryInterval);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     logger.warn("Retry sleep interrupted");
@@ -294,6 +298,7 @@ public class FraudProcessor {
                             // 2. Revert Redis state
                             DroolBuilderRulePublisher publisher = new DroolBuilderRulePublisher();
                             publisher.deployRuleset(AppConfig.repositoryWorkspaceDirectory, ruleset, version, " -> Redeployment of old version: " + oldVersionFormatted, ma.medtech.Main.providerType);
+                            reloadOk = true; // Exit loop, even though we failed the update
                         } else {
                             logger.error("Could not parse old version string '{}', cannot rollback reliably.", oldVersionFull);
                         }
@@ -304,7 +309,6 @@ public class FraudProcessor {
                         rulesReloadLock.writeLock().unlock();
                     }
                     
-                    reloadOk = true; // Exit loop, even though we failed the update
                 }
             } finally {
                 if (reloadOk) {
@@ -368,7 +372,6 @@ public class FraudProcessor {
         }
 
         this.sessionFactory = new DroolsSessionFactory(RulesConfig.extendedVersion);
-        logger.info("FraudProcessor initialized. Drools Session Pooling Enabled: {}", AppConfig.appDroolsSessionPoolingEnabled);
     }
 
     private DroolsSession acquireSession(String extendedSubject, Long windowSize, String key, String correlationId) throws InterruptedException {
@@ -378,20 +381,23 @@ public class FraudProcessor {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
 
-        if (AppConfig.appDroolsSessionPoolingEnabled) {
-            Long beginAcquireSession = System.currentTimeMillis();
-            BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
-            if (pool == null) {
-                throw new IllegalArgumentException("No session pool for subject: " + extendedSubject);
-            }
-            DroolsSession session = pool.take(); // Bloque si vide
-            Long endAcquireSession = System.currentTimeMillis();
-            logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
-            return session;
-        } else {
-             // Create fresh session if pooling is disabled
-             return createSessionForSubject(subjectKey, this.sessionFactory);
+        // TEMPORARY FIX: Disable pooling to avoid IllegalStateException (corruption of stateful session)
+        // We create a fresh session every time.
+        // NOTE: This might impact performance, but ensures stability.
+        
+        /*
+        Long beginAcquireSession = System.currentTimeMillis();
+        BlockingQueue<DroolsSession> pool = sessionPools.get(subjectKey);
+        if (pool == null) {
+            throw new IllegalArgumentException("No session pool for subject: " + extendedSubject);
         }
+        DroolsSession session = pool.take(); // Bloque si vide
+        Long endAcquireSession = System.currentTimeMillis();
+        logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: acquireSession() duration -> pool size {}", (endAcquireSession - beginAcquireSession), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(windowSize), key, pool.size());
+        return session;
+        */
+        
+        return createSessionForSubject(subjectKey, this.sessionFactory);
     }
 
     private void releaseSession(String extendedSubject, DroolsSession session) {
@@ -400,39 +406,39 @@ public class FraudProcessor {
         if (extendedSubject.contains(KEY_SEPARATOR)) {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
         }
-
+        
+        // TEMPORARY FIX: Always dispose session, do not return to pool.
         if (session != null) {
             try {
-                if (AppConfig.appDroolsSessionPoolingEnabled) {
-                    if (session.isBroken()) {
-                        logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
-                        try {
-                            session.dispose();
-                        } catch (Exception ignore) {}
-                        // Replace with a fresh session
-                        sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
-                    } else {
-                        session.clean(); // Nettoie les faits
-                        sessionPools.get(subjectKey).offer(session);
-                    }
-                } else {
-                    // Dispose immediately if pooling is disabled
+                session.dispose();
+            } catch (Exception e) {
+                 logger.error("Error disposing session for subject: {}", extendedSubject, e);
+            }
+        }
+
+        /*
+        if (session != null) {
+            try {
+                if (session.isBroken()) {
+                    logger.warn("Discarding broken Drools session for subject: {}", extendedSubject);
                     try {
                         session.dispose();
                     } catch (Exception ignore) {}
+                    // Replace with a fresh session
+                    sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                } else {
+                    session.clean(); // Nettoie les faits
+                    sessionPools.get(subjectKey).offer(session);
                 }
             } catch (Exception e) {
-                if (AppConfig.appDroolsSessionPoolingEnabled) {
-                    logger.error("Error returning/replacing session in pool for subject: {}", extendedSubject, e);
-                    // Safe guard: ensure pool doesn't shrink
-                    try {
-                       sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
-                    } catch (Exception ignore) {}
-                } else {
-                    logger.error("Error disposing session: {}", e.getMessage());
-                }
+                logger.error("Error returning/replacing session in pool for subject: {}", extendedSubject, e);
+                // Safe guard: ensure pool doesn't shrink
+                try {
+                   sessionPools.get(subjectKey).offer(createSessionForSubject(subjectKey));
+                } catch (Exception ignore) {}
             }
         }
+        */
     }
 
     /**
@@ -610,37 +616,41 @@ public class FraudProcessor {
      * @param trxEntry The transaction entry containing delta values.
      */
     private void substractDelta(Measurment m, TrxEntry trxEntry) {
+
         if (trxEntry == null) {
             return;
         }
 
-        if (trxEntry.getRecordDelta() != null && !trxEntry.getRecordDelta().isEmpty()) {
-            for (Map.Entry<String, RecordsDelta> entry : trxEntry.getRecordDelta().entrySet()) {
-                String recordKey = entry.getKey();
-                RecordsDelta delta = entry.getValue();
-                MeasurmentRecord record = m.getRecords().peek(recordKey);
+        if (m.getRecords() != null && !m.getRecords().isEmpty()) {
 
-                if (record != null) {
-                    record.setCount(record.getCount() - delta.getCountDelta());
-                    record.setAmount(record.getAmount() - delta.getAmountDelta());
+            for (String recordKey : m.getRecords().keySet()) {
+                MeasurmentRecord record = m.getRecords().get(recordKey);
 
-                    if (delta.getValuesDelta() != null) {
-                        for (Entry<String, Object> valEntry : delta.getValuesDelta().entrySet()) {
-                            String attrKey = valEntry.getKey();
-                            substractDoubleValue(valEntry, record, attrKey);
-                            substractLongValue(valEntry, record, attrKey);
-                            substractIntegerValue(valEntry, record, attrKey);
-                        }
+                if (trxEntry.getRecordDelta() != null && trxEntry.getRecordDelta().get(recordKey) != null) {
+
+                    record.setCount(record.getCount() - trxEntry.getRecordDelta().get(recordKey).getCountDelta());
+                    record.setAmount(record.getAmount() - trxEntry.getRecordDelta().get(recordKey).getAmountDelta());
+
+                    for (Entry<String, Object> entry : trxEntry.getRecordDelta().get(recordKey).getValuesDelta()
+                            .entrySet()) {
+                        String attrKey = entry.getKey();
+                        substractDoubleValue(entry, record, attrKey);
+                        substractLongValue(entry, record, attrKey);
+                        substractIntegerValue(entry, record, attrKey);
                     }
 
-                    if (delta.getArgSetDelta() != null && !delta.getArgSetDelta().isEmpty()) {
-                        for (String argToRemove : delta.getArgSetDelta()) {
+                    if (trxEntry.getRecordDelta().get(recordKey).getArgSetDelta() != null
+                            && trxEntry.getRecordDelta().get(recordKey).getArgSetDelta() != null
+                            && !trxEntry.getRecordDelta().get(recordKey).getArgSetDelta().isEmpty()) {
+                        for (String argToRemove : trxEntry.getRecordDelta().get(recordKey).getArgSetDelta()) {
                             record.removeFromArgSet(argToRemove);
                         }
                     }
 
-                    if (delta.getArgListDelta() != null && !delta.getArgListDelta().isEmpty()) {
-                        for (String argToRemove : delta.getArgListDelta()) {
+                    if (trxEntry.getRecordDelta().get(recordKey).getArgListDelta() != null
+                            && trxEntry.getRecordDelta().get(recordKey).getArgListDelta() != null
+                            && !trxEntry.getRecordDelta().get(recordKey).getArgListDelta().isEmpty()) {
+                        for (String argToRemove : trxEntry.getRecordDelta().get(recordKey).getArgListDelta()) {
                             record.removeFromArgList(argToRemove);
                         }
                     }
@@ -683,15 +693,12 @@ public class FraudProcessor {
                 String recordKey = entry.getKey();
                 MeasurmentRecord record = entry.getValue();
 
-                if (record.getCount() != 0 || record.getAmount() != 0.0 || !record.getValues().isEmpty() || !record.getArgList().isEmpty() || !record.getArgSet().isEmpty()) {
-                    RecordsDelta rd = new RecordsDelta();
-                    rd.setCountDelta(record.getCount());
-                    rd.setAmountDelta(record.getAmount());
-                    rd.setValuesDelta(new HashMap<>(record.getValues()));
-                    rd.setArgListDelta(new ArrayList<>(record.getArgList()));
-                    rd.setArgSetDelta(new HashSet<>(record.getArgSet()));
-                    deltas.put(recordKey, rd);
-                }
+                deltas.put(recordKey, new RecordsDelta());
+                deltas.get(recordKey).setCountDelta(record.getCount());
+                deltas.get(recordKey).setAmountDelta(record.getAmount());
+                deltas.get(recordKey).setValuesDelta(new HashMap<>(record.getValues()));
+                deltas.get(recordKey).setArgListDelta(new ArrayList<>(record.getArgList()));
+                deltas.get(recordKey).setArgSetDelta(new HashSet<>(record.getArgSet()));
             }
 
             return deltas;
@@ -702,52 +709,72 @@ public class FraudProcessor {
             MeasurmentRecord finalRecord = entry.getValue();
             MeasurmentRecord initialRecord = initialMeasurment.getRecords().peek(recordKey);
 
-            long countDelta = finalRecord.getCount() - (initialRecord != null ? (initialRecord.getCount() == null ? 0L : initialRecord.getCount()) : 0L);
-            double amountDelta = finalRecord.getAmount() - (initialRecord != null ? (initialRecord.getAmount() == null ? 0.0 : initialRecord.getAmount()) : 0.0);
+            if (initialRecord == null) {
+                deltas.put(recordKey, new RecordsDelta());
+                deltas.get(recordKey).setCountDelta(finalRecord.getCount());
+                deltas.get(recordKey).setAmountDelta(finalRecord.getAmount());
+                deltas.get(recordKey).setValuesDelta(safeSnapshotMap(finalRecord.getValues()));
+                deltas.get(recordKey).setArgListDelta(new ArrayList<>(safeSnapshotList(finalRecord.getArgList())));
+                deltas.get(recordKey).setArgSetDelta(new HashSet<>(safeSnapshotSet(finalRecord.getArgSet())));
+            } else {
+                deltas.put(recordKey, new RecordsDelta());
+                deltas.get(recordKey).setCountDelta(
+                        finalRecord.getCount() - (initialRecord.getCount() == null ? 0L : initialRecord.getCount()));
+                deltas.get(recordKey).setAmountDelta(finalRecord.getAmount()
+                        - (initialRecord.getAmount() == null ? 0.0 : initialRecord.getAmount()));
 
-            Map<String, Object> valuesDelta = null;
-            Map<String, Object> finalValuesSnapshot = safeSnapshotMap(finalRecord.getValues());
-            if (!finalValuesSnapshot.isEmpty()) {
-                valuesDelta = new HashMap<>(10);
-                for (Entry<String, Object> valueEntry : finalValuesSnapshot.entrySet()) {
-                    String attrKey = valueEntry.getKey();
-                    Object finalValue = valueEntry.getValue();
-                    Object initialValue = initialRecord != null && initialRecord.getValues() != null ? initialRecord.getValues().get(attrKey) : null;
-                    if (finalValue instanceof Double) {
-                        Double deltaValue = (Double) finalValue - (initialValue instanceof Double ? (Double) initialValue : 0.0);
-                        if (deltaValue != 0.0) valuesDelta.put(attrKey, deltaValue);
-                    } else if (finalValue instanceof Long) {
-                        Long deltaValue = (Long) finalValue - (initialValue instanceof Long ? (Long) initialValue : 0L);
-                        if (deltaValue != 0L) valuesDelta.put(attrKey, deltaValue);
-                    } else if (finalValue instanceof Integer) {
-                        Integer deltaValue = (Integer) finalValue - (initialValue instanceof Integer ? (Integer) initialValue : 0);
-                        if (deltaValue != 0) valuesDelta.put(attrKey, deltaValue);
+                Map<String, Object> valuesDelta=null;
+                Map<String, Object> finalValuesSnapshot = safeSnapshotMap(finalRecord.getValues());
+                if (!finalValuesSnapshot.isEmpty()) {
+                    valuesDelta = new HashMap<>(10);
+                    for (Entry<String, Object> valueEntry : finalValuesSnapshot.entrySet()) {
+                        String attrKey = valueEntry.getKey();
+                        Object finalValue = valueEntry.getValue();
+                        Object initialValue = initialRecord.getValues() != null ? initialRecord.getValues().get(attrKey) : null;
+                        if (finalValue instanceof Double) {
+                            Double deltaValue = (Double) finalValue
+                                - (initialValue != null && initialValue instanceof Double ? (Double) initialValue
+                                        : 0.0);
+                            if (deltaValue != 0.0) {
+                                valuesDelta.put(attrKey, deltaValue);
+                            }
+                        } else if (finalValue instanceof Long) {
+                            Long deltaValue = (Long) finalValue
+                                    - (initialValue != null && initialValue instanceof Long ? (Long) initialValue : 0L);
+                            if (deltaValue != 0L) {
+                                valuesDelta.put(attrKey, deltaValue);
+                            }
+                        } else if (finalValue instanceof Integer) {
+                            Integer deltaValue = (Integer) finalValue
+                                    - (initialValue != null && initialValue instanceof Integer ? (Integer) initialValue
+                                            : 0);
+                            if (deltaValue != 0) {
+                                valuesDelta.put(attrKey, deltaValue);
+                            }
+                        }
                     }
                 }
-                if (valuesDelta.isEmpty()) valuesDelta = null;
+                deltas.get(recordKey).setValuesDelta(valuesDelta);
             }
 
-            Set<String> argSetDelta = new HashSet<>(safeSnapshotSet(finalRecord.getArgSet()));
-            if (initialRecord != null && initialRecord.getArgSet() != null) {
-                argSetDelta.removeAll(initialRecord.getArgSet());
-            }
-            if (argSetDelta.isEmpty()) argSetDelta = null;
+            Set<String> initialArgSet = initialRecord != null && initialRecord.getArgSet() != null
+                    ? safeSnapshotSet(initialRecord.getArgSet())
+                    : new HashSet<>();
+            Set<String> finalArgSet = finalRecord != null && finalRecord.getArgSet() != null ? finalRecord.getArgSet()
+                    : new HashSet<>();
+            Set<String> argSetDelta = new HashSet<>(safeSnapshotSet(finalArgSet));
+            argSetDelta.removeAll(initialArgSet);
+            deltas.get(recordKey).setArgSetDelta(argSetDelta);
 
-            List<String> argListDelta = new ArrayList<>(safeSnapshotList(finalRecord.getArgList()));
-            if (initialRecord != null && initialRecord.getArgList() != null) {
-                argListDelta.removeAll(initialRecord.getArgList());
-            }
-            if (argListDelta.isEmpty()) argListDelta = null;
-
-            if (countDelta != 0 || amountDelta != 0.0 || valuesDelta != null || argSetDelta != null || argListDelta != null) {
-                RecordsDelta rd = new RecordsDelta();
-                rd.setCountDelta(countDelta);
-                rd.setAmountDelta(amountDelta);
-                rd.setValuesDelta(valuesDelta);
-                rd.setArgSetDelta(argSetDelta != null ? argSetDelta : new HashSet<>());
-                rd.setArgListDelta(argListDelta != null ? argListDelta : new ArrayList<>());
-                deltas.put(recordKey, rd);
-            }
+            List<String> initialArgList = initialRecord != null && initialRecord.getArgList() != null
+                    ? safeSnapshotList(initialRecord.getArgList())
+                    : new ArrayList<>();
+            List<String> finalArgList = finalRecord != null && finalRecord.getArgList() != null
+                    ? finalRecord.getArgList()
+                    : new ArrayList<>();
+            List<String> argListDelta = new ArrayList<>(safeSnapshotList(finalArgList));
+            argListDelta.removeAll(initialArgList);
+            deltas.get(recordKey).setArgListDelta(argListDelta);
         }
 
         return deltas;
@@ -814,7 +841,7 @@ public class FraudProcessor {
         int expectedSize = Math.max(initialMeasurment.getLasts().size(), finalMeasurment.getLasts().size());
         Map<String, Object> deltas = new HashMap<>(expectedSize);
 
-        for (Entry<String, Object> entry : finalMeasurment.getLasts().entrySet()) {
+        for (Entry<String, Object> entry : Collections.unmodifiableMap(finalMeasurment.getLasts()).entrySet()) {
             String lastKey = entry.getKey();
             Object finalValue = entry.getValue();
             Object initialValue = initialMeasurment.getLasts().get(lastKey);
@@ -859,19 +886,14 @@ public class FraudProcessor {
 
         List<TrxEntry> expiredTrx = new ArrayList<>();
 
-        int expiredCount = 0;
-        for (TrxEntry trxEntry : allTrx) {
+        for (Iterator<TrxEntry> it = allTrx.iterator(); it.hasNext();) {
+            TrxEntry trxEntry = it.next();
             if (measurment.expired(trxEntry)) {
                 expiredTrx.add(trxEntry); // collect expired transaction in a temporary list
-                expiredCount++;
+                it.remove(); // remove expired transaction from the main list
             } else {
                 break;
             }
-        }
-
-        if (expiredCount > 0) {
-            // Remove all expired transactions in one go (O(N) instead of O(K*N))
-            allTrx.subList(0, expiredCount).clear();
         }
 
         // Substract from measurment all delta generated by the expired transactions
@@ -883,14 +905,12 @@ public class FraudProcessor {
         }
 
         Long cloneStart = System.currentTimeMillis();
-        Measurment initialMeasurment = measurment.clone(false);
+        Measurment initialMeasurment = measurment.clone();
         Long cloneEnd = System.currentTimeMillis();
         logger.debug("Time {} ms [{}] [{}] win={} key={} trx={} ProcessFunction: Cloning measurment", (cloneEnd - cloneStart), correlationId, measurment.getSubject(), TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey(), transaction.getTransactionNo());
 
         // Set the current transaction in the measurment for drools processing        
-        // Defensive copy: Clone the measurment for Drools execution to avoid polluting the session with stale objects
-        Measurment droolsMeasurment = measurment.clone(true);
-        droolsMeasurment.setTransaction(transaction);
+        measurment.setTransaction(transaction);
 
         try {
             // update the indicators in the measurment (with drools)
@@ -901,19 +921,11 @@ public class FraudProcessor {
                 extendedSubject = Subject.CUSTOM + KEY_SEPARATOR + measurment.getCustomSubject();
             }
 
-            if (droolsMeasurment.getGlobalRecords() == null) {
-                droolsMeasurment.setGlobalRecords(new RecordHashMap());
+            if (measurment.getGlobalRecords() == null) {
+                measurment.setGlobalRecords(new RecordHashMap());
             }
 
-            executeSession(droolsMeasurment, extendedSubject, correlationId);
-
-            // Merge changes back from droolsMeasurment to original measurment
-            measurment.setAlertSet(droolsMeasurment.getAlertSet());
-            measurment.setRecords(droolsMeasurment.getRecords());
-            measurment.setGlobalRecords(droolsMeasurment.getGlobalRecords());
-            measurment.setLasts(droolsMeasurment.getLasts());
-            measurment.setLastsCount(droolsMeasurment.getLastsCount());
-            measurment.setDirty(droolsMeasurment.getDirty());
+            executeSession(measurment, extendedSubject, correlationId);
             Long endExecute = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [{}] win={} key={} ProcessFunction: executeSession() duration", (endExecute - beginExecute), correlationId, extendedSubject, TimeConversion.toHumanReadableDuration(measurment.getWindowSize()), measurment.getKey());
 
@@ -993,9 +1005,7 @@ public class FraudProcessor {
         }
 
         // Set the current transaction in the measurment for drools processing
-        // Defensive copy for Fixed Window
-        Measurment droolsMeasurment = wm.getMeasurment().clone();
-        droolsMeasurment.setTransaction(trx);
+        wm.getMeasurment().setTransaction(trx);
 
         long t0 = System.nanoTime();
         Long tend = t0;
@@ -1006,16 +1016,7 @@ public class FraudProcessor {
             }
 
             // update the indicators in the measurment (with drools)
-            executeSession(droolsMeasurment, extendedSubject, correlationId);
-
-            // Merge back
-            wm.getMeasurment().setAlertSet(droolsMeasurment.getAlertSet());
-            wm.getMeasurment().setRecords(droolsMeasurment.getRecords());
-            wm.getMeasurment().setGlobalRecords(droolsMeasurment.getGlobalRecords());
-            wm.getMeasurment().setLasts(droolsMeasurment.getLasts());
-            wm.getMeasurment().setLastsCount(droolsMeasurment.getLastsCount());
-            wm.getMeasurment().setTrxEntries(droolsMeasurment.getTrxEntries());
-            wm.getMeasurment().setDirty(droolsMeasurment.getDirty());
+            executeSession(wm.getMeasurment(), extendedSubject, correlationId);
         } catch (Exception e) {
             logger.error("Error inserting and executing transaction in session: {}", e.getMessage());
             e.printStackTrace();
@@ -1119,10 +1120,16 @@ public class FraudProcessor {
 
             try {
             // Désérialiser
+            FraudManagerMetrics deserMetrics = FraudManagerMetrics.getInstance();
+            Timer.Sample deserializeTimer = deserMetrics != null ? deserMetrics.startSerializationTimer() : null;
             long beforeDeserialize = System.currentTimeMillis();
             @SuppressWarnings("unchecked")
             FraudCheckRequest<ITransaction> request = (FraudCheckRequest<ITransaction>) SerializationManager.deserialize(msg.getData());
             long afterDeserialize = System.currentTimeMillis();
+            if (deserMetrics != null && deserializeTimer != null) {
+                deserMetrics.recordSerializationTime(deserializeTimer);
+                deserMetrics.incrementDeserializationOperations();
+            }
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Deserialization Time", (afterDeserialize - beforeDeserialize), correlationId, Thread.currentThread().getName(), request.getContent().getTransactionNo());
 
             VRTransactionSummary tx = new VRTransactionSummary(request.getContent());
@@ -1134,10 +1141,8 @@ public class FraudProcessor {
 
             long clientTs = sClientTs != null ? Long.parseLong(sClientTs) : 0L;
             long recvTs = sRecvTs != null ? Long.parseLong(sRecvTs) : recv0;
-            if (clientTs > 0) {
-                long publishToReceiveMs = recvTs - clientTs;
-                logger.debug("Time {} ms [{}] [Thread {}] trx={} Nats: Time between API publish and fraudmanager reception", publishToReceiveMs, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
-            }
+            long publishToReceiveMs = recvTs - clientTs;
+            logger.debug("Time {} ms [{}] [Thread {}] trx={} Nats: Time between API publish and fraudmanager reception", publishToReceiveMs, correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
             String cardKey = CARD_KEY_PREFIX + tx.getCardId();
             String merchantKey = MERCHANT_KEY_PREFIX + tx.getMerchant();
@@ -1326,6 +1331,7 @@ public class FraudProcessor {
 
             // Récupérer les résultats
             AlertSet combinedAlertSet = null;
+            FraudManagerMetrics metrics = FraudManagerMetrics.getInstance();
 
             try {
                 for (CompletableFuture<TrxOrAlertEvent> future : futures) {
@@ -1345,6 +1351,35 @@ public class FraudProcessor {
 
             combinedAlertSet.setTransactionNo(tx.getTransactionNo());
             
+            // Record alert metrics
+            if (metrics != null && combinedAlertSet != null) {
+                if (combinedAlertSet.hasAlerts() && combinedAlertSet.getAlerts() != null) {
+                    int alertCount = combinedAlertSet.getAlerts().size();
+                    metrics.incrementAlertsGenerated(alertCount);
+                    metrics.recordAlertScore(combinedAlertSet.getScore() != null ? combinedAlertSet.getScore() : 0.0);
+                    
+                    // Track alerts by rule
+                    for (Alert alert : combinedAlertSet.getAlerts()) {
+                        if (alert.getRuleTitle() != null) {
+                            metrics.incrementAlertsByRule(alert.getRuleTitle());
+                        }
+                    }
+                }
+                
+                // Record transaction amount if available
+                if (tx.getAmount() != null) {
+                    metrics.recordTransactionAmount(tx.getAmount());
+                }
+                
+                // Track by subject
+                if (RulesConfig.cardSubjectPresent) {
+                    metrics.incrementTransactionsBySubject(Subject.CARD);
+                }
+                if (RulesConfig.merchantSubjectPresent) {
+                    metrics.incrementTransactionsBySubject(Subject.MERCHANT);
+                }
+            }
+            
             Long resultAgregationEnd = System.currentTimeMillis();
             logger.debug("Time {} ms [{}] [Thread {}] trx={} duration of results aggregation", (resultAgregationEnd - endOfJoin), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
 
@@ -1356,9 +1391,15 @@ public class FraudProcessor {
             response.setErrorMessage(NO_ERROR_MESSAGE);
 
             // Sérialiser et publier réponse
+            Timer.Sample serializeTimer = metrics != null ? metrics.startSerializationTimer() : null;
             Long beforeSerialize = System.currentTimeMillis();
             byte[] responseBytes = SerializationManager.serialize(response);
             Long afterSerialize = System.currentTimeMillis();
+            if (metrics != null && serializeTimer != null) {
+                metrics.recordSerializationTime(serializeTimer);
+                metrics.incrementSerializationOperations();
+                metrics.incrementNatsMessagesSent();
+            }
             logger.debug("Time {} ms [{}] [Thread {}] trx={} process(): Serialization Time", (afterSerialize - beforeSerialize), correlationId, Thread.currentThread().getName(), tx.getTransactionNo());
             natsConnection.publish(topic, responseBytes);
 

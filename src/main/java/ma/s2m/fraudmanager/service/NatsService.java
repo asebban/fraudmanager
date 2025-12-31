@@ -8,7 +8,9 @@ import ma.s2m.fraudmanager.service.db.IStoreService;
 import ma.s2m.fraudmanager.service.processors.FraudProcessor;
 import ma.s2m.fraudmanager.service.processors.QueryProcessor;
 import ma.s2m.serializer.SerializationManager;
+import ma.s2m.fraudmanager.metrics.FraudManagerMetrics;
 
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,7 +56,18 @@ public class NatsService {
         // Dispatcher for main fraud processing
         this.dispatcher = nc.createDispatcher(msg -> {
             executor.submit(() -> {
+                FraudManagerMetrics metrics = FraudManagerMetrics.getInstance();
+                Timer.Sample timerSample = null;
+                
                 try {
+                    // Record message received
+                    if (metrics != null) {
+                        metrics.incrementNatsMessagesReceived();
+                        metrics.incrementActiveTransactions();
+                        metrics.recordMessageSize(msg.getData() != null ? msg.getData().length : 0);
+                        timerSample = metrics.startTransactionTimer();
+                    }
+                    
                     long startTime = System.currentTimeMillis();
                     if (msg.getHeaders() != null) {
                         msg.getHeaders().put("x-recv-ts-ms", String.valueOf(startTime));
@@ -68,8 +81,23 @@ public class NatsService {
                     String correlationId = msg.getHeaders() == null ? null
                             : msg.getHeaders().getFirst("x-correlation-id");
                     logger.debug("Time {} [{}] [{}] [Thread {}] Time taken to process the whole message from NATS receive to end of processing", (endTime - startTime), correlationId, msg.getSubject(), Thread.currentThread().getName());
+                    
+                    // Record successful processing
+                    if (metrics != null) {
+                        metrics.incrementTransactionsProcessed();
+                    }
                 } catch (Exception e) {
                     logger.error("Worker error while processing message", e);
+                    if (metrics != null) {
+                        metrics.incrementTransactionsFailed();
+                    }
+                } finally {
+                    if (metrics != null) {
+                        metrics.decrementActiveTransactions();
+                        if (timerSample != null) {
+                            metrics.recordTransactionTime(timerSample);
+                        }
+                    }
                 }
             });
         });

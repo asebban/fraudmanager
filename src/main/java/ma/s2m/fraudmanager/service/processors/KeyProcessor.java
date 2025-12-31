@@ -72,7 +72,6 @@ public class KeyProcessor {
                 logger.info("Lock contention: waited {} ms for key {} (dataKey={})", waitedMs, keyElement, dataKey);
             }
 
-            logger.debug("Processing datakey: {} -> key: {}", dataKey, keyElement);
             return processor.apply(keyElement);
         } catch (Exception e) {
             logger.error("Error processing data for key: {}", dataKey, e);

@@ -26,14 +26,13 @@ final class StatefulDroolsSession implements DroolsSession {
     private String extendedSubject;
     private Boolean noRules = false;
     private Logger logger = org.slf4j.LoggerFactory.getLogger(StatefulDroolsSession.class);
+    private Boolean droolsProfilerEnabled = AppConfig.droolsProfilerEnabled;
     private Map<String, EntryPoint> entryPointsMap = new HashMap<>();
     private Map<FactHandle, EntryPoint> insertedHandles = new HashMap<>();
     private RuleProfiler ruleProfiler = new RuleProfiler();
     private String correlationId = "";
     private final AtomicBoolean inUse = new AtomicBoolean(false);
     private boolean broken = false;
-    private int usageCount = 0;
-    private static final int MAX_USAGE_COUNT = 50;
 
     public StatefulDroolsSession(KieSession ks) {
         this.ks = ks;
@@ -43,7 +42,7 @@ final class StatefulDroolsSession implements DroolsSession {
                 entryPointsMap.put(groupName, entryPoint);
             }
         }
-        if (AppConfig.droolsProfilerEnabled) {
+        if (droolsProfilerEnabled) {
             this.ks.addEventListener(this.ruleProfiler);
         }
 
@@ -56,20 +55,10 @@ final class StatefulDroolsSession implements DroolsSession {
 
     @Override
     public void execute(Object... facts) {
-        this.usageCount++;
+
         if (!inUse.compareAndSet(false, true)) {
             // A KieSession is not thread-safe; concurrent usage corrupts internal state.
             throw new IllegalStateException("Drools session used concurrently");
-        }
-
-        // FAIL-FAST: Verify session is clean before use
-        if (ks.getFactCount() > 0) {
-            throw new IllegalStateException("Session is dirty at start of execute! FactCount=" + ks.getFactCount());
-        }
-        for (EntryPoint ep : entryPointsMap.values()) {
-            if (ep != null && ep.getFactCount() > 0) {
-                throw new IllegalStateException("Session is dirty at start of execute! EntryPoint " + ep.getEntryPointId() + " has " + ep.getFactCount() + " facts.");
-            }
         }
 
         try {
@@ -99,7 +88,7 @@ final class StatefulDroolsSession implements DroolsSession {
         Duration duration = Duration.ofMillis(m.getWindowSize());
         String formattedDuration = DurationFormatter.formatDuration(duration);
 
-        if (AppConfig.droolsProfilerEnabled) {
+        if (droolsProfilerEnabled) {
             this.ruleProfiler.reset();
         }
 
@@ -133,7 +122,7 @@ final class StatefulDroolsSession implements DroolsSession {
                 logger.debug("Time {} ms [{}] [{}] trx={} key={} ms of execution of fireAllRules for window {}, last rule name: {}", (t1 - t0),
                         this.correlationId, this.extendedSubject, m != null ? m.getTransaction().getTransactionNo() : "N/A",
                         m != null ? m.getKey() : "N/A", formattedDuration, this.ruleProfiler.getLastRuleName());
-                if (AppConfig.droolsProfilerEnabled) {
+                if (droolsProfilerEnabled) {
                     final Measurment finalM = m;
                     final String cId = this.correlationId;
                     this.ruleProfiler.reportTop(10).forEach(s -> {
@@ -146,11 +135,8 @@ final class StatefulDroolsSession implements DroolsSession {
             } else {
                 Long t0 = System.nanoTime();
                 ks.fireAllRules();
-                logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}",
-                        (System.nanoTime() - t0) / 1_000_000, formattedDuration,
-                        m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
-
-                if (AppConfig.droolsProfilerEnabled) {
+                logger.debug("Time {} ms of execution of fireAllRules for window {}, trx={}, subject={}", (System.nanoTime() - t0) / 1_000_000, formattedDuration, m != null ? m.getTransaction().getTransactionNo() : "N/A", this.extendedSubject);
+                if (droolsProfilerEnabled) {
                     this.ruleProfiler.reportTop(10).forEach(logger::debug);
                 }
             }
@@ -170,9 +156,6 @@ final class StatefulDroolsSession implements DroolsSession {
     }
 
     private void cleanEntryPoints() {
-        try {
-             ks.getAgenda().clear();
-        } catch (Exception ignore) {}
         for (Map.Entry<FactHandle, EntryPoint> entry : new HashMap<>(insertedHandles).entrySet()) {
             FactHandle handle = entry.getKey();
             EntryPoint ep = entry.getValue();
@@ -194,73 +177,21 @@ final class StatefulDroolsSession implements DroolsSession {
 
     @Override
     public void clean() {
-        try {
-             ks.getAgenda().clear();
-        } catch (Exception ignore) {}
-        
-        java.util.Set<String> processed = new java.util.HashSet<>();
-
-        // 1. Clean default entry point
-        // Use generic list to avoid type issues reported by user
-        for (Object fh : new java.util.ArrayList<>(ks.getFactHandles())) {
-            try {
-                if (fh instanceof FactHandle) {
-                    ks.delete((FactHandle) fh);
-                }
-            } catch (Exception e) {
-                 throw new RuntimeException("Failed to delete fact from default entry point", e);
-            }
-        }
-        processed.add("DEFAULT");
-
-        // 2. Clean Cached EntryPoints
-        for (EntryPoint ep : entryPointsMap.values()) {
-            if (ep == null) continue;
-            String id = ep.getEntryPointId();
-            if (processed.contains(id)) continue;
-            
-            for (Object fh : new java.util.ArrayList<>(ep.getFactHandles())) {
-                try {
-                     if (fh instanceof FactHandle) {
-                        ep.delete((FactHandle) fh);
-                    }
-                } catch (Exception e) {
-                    throw new RuntimeException("Failed to delete fact from entry point " + id, e);
-                }
-            }
-            processed.add(id);
-        }
-
-        // 3. Clean any other EntryPoints returned by ks
+        // More robust cleanup: iterate over all entry points
         for (EntryPoint ep : ks.getEntryPoints()) {
-            String id = ep.getEntryPointId();
-            if (processed.contains(id)) continue;
-            
-            for (Object fh : new java.util.ArrayList<>(ep.getFactHandles())) {
+            for (FactHandle factHandle : ep.getFactHandles()) {
                 try {
-                     if (fh instanceof FactHandle) {
-                        ep.delete((FactHandle) fh);
-                    }
+                    ep.delete(factHandle);
                 } catch (Exception e) {
-                    throw new RuntimeException("Failed to delete fact from entry point " + id, e);
+                    logger.debug("Failed to delete fact from entry point {}: {}", ep.getEntryPointId(), e.toString());
                 }
-            }
-        }
-        
-        // VERIFY: If session is still not empty, THROW to discard it.
-        if (ks.getFactCount() > 0) {
-             throw new RuntimeException("Clean Verification Failed: Default EntryPoint still has " + ks.getFactCount() + " facts after delete!");
-        }
-        for (EntryPoint ep : entryPointsMap.values()) {
-            if (ep != null && ep.getFactCount() > 0) {
-                 throw new RuntimeException("Clean Verification Failed: EntryPoint " + ep.getEntryPointId() + " still has " + ep.getFactCount() + " facts!");
             }
         }
     }
 
     @Override
     public boolean isBroken() {
-        return broken || usageCount >= MAX_USAGE_COUNT;
+        return broken;
     }
 
     // Optionnel : exposer KieSession pour ajouter listeners, channels…
