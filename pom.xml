@@ -105,6 +105,11 @@
             <artifactId>storage-embedded</artifactId>
             <version>2.0.0</version>
         </dependency>
+        <dependency>
+            <groupId>org.eclipse.store</groupId>
+            <artifactId>storage-embedded-configuration</artifactId>
+            <version>2.0.0</version>
+        </dependency>
         <!-- Micrometer core + Prometheus registry -->
         <dependency>
             <groupId>io.micrometer</groupId>

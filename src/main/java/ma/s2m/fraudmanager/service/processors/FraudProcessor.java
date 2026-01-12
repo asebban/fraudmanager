@@ -402,10 +402,10 @@ public class FraudProcessor {
 
     private void releaseSession(String extendedSubject, DroolsSession session) {
 
-        String subjectKey = extendedSubject;
+        /*String subjectKey = extendedSubject;
         if (extendedSubject.contains(KEY_SEPARATOR)) {
             subjectKey = extendedSubject.substring(extendedSubject.indexOf(KEY_SEPARATOR) + 1);
-        }
+        }*/
         
         // TEMPORARY FIX: Always dispose session, do not return to pool.
         if (session != null) {
