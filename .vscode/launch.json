@@ -3,24 +3,27 @@
   "configurations": [
     {
       "type": "java",
-      "name": "Main",
+      "name": "FraudManagerStarter",
       "request": "launch",
       "mainClass": "ma.s2m.fraudmanager.FraudManagerStarter",
-      "projectName": "fraudmanager",
+      "projectName": "fraudmanager-starter",
+      "console": "integratedTerminal",
+      "vmArgs": [
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/java.math=ALL-UNNAMED",
+        "--add-opens=java.base/java.text=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.time=ALL-UNNAMED",
+        "--add-opens=java.sql/java.sql=ALL-UNNAMED"    
+      ],
       "args": [
-        "--option",
-        "node.name=node-0",
-        "--option",
-        "storage.node-0.shards=0"
+        "rocksdb", 
+        "60", 
+        "4", 
+        "./benchmark-db"
       ]
-    },
-    {
-      "type": "java",
-      "name": "Launch FraudManager",
-      "request": "launch",
-      "mainClass": "ma.s2m.fraudmanager.FraudManagerStarter",
-      "projectName": "FraudManager",
-      "vmArgs": "--enable-native-access=ALL-UNNAMED"
     }
   ]
 }
