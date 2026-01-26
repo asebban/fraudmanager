@@ -6,6 +6,13 @@
       "name": "FraudManagerStarter",
       "request": "launch",
       "mainClass": "ma.s2m.fraudmanager.FraudManagerStarter",
+      "projectName": "fraudmanager"
+    },
+    {
+      "type": "java",
+      "name": "FraudManagerStarter",
+      "request": "launch",
+      "mainClass": "ma.s2m.fraudmanager.FraudManagerStarter",
       "projectName": "fraudmanager-starter",
       "console": "integratedTerminal",
       "vmArgs": [
@@ -16,12 +23,12 @@
         "--add-opens=java.base/java.text=ALL-UNNAMED",
         "--add-opens=java.base/java.net=ALL-UNNAMED",
         "--add-opens=java.base/java.time=ALL-UNNAMED",
-        "--add-opens=java.sql/java.sql=ALL-UNNAMED"    
+        "--add-opens=java.sql/java.sql=ALL-UNNAMED"
       ],
       "args": [
-        "rocksdb", 
-        "60", 
-        "4", 
+        "rocksdb",
+        "60",
+        "4",
         "./benchmark-db"
       ]
     }

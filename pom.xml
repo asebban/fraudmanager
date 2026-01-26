@@ -3,6 +3,12 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ma.s2m</groupId>
+        <artifactId>fraudmanager-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
     <groupId>ma.s2m</groupId>
     <artifactId>fraudmanager</artifactId>
     <version>4.4.0-RELEASE</version>
@@ -19,107 +25,92 @@
         <dependency>
             <groupId>io.nats</groupId>
             <artifactId>jnats</artifactId>
-            <version>2.17.6</version>
         </dependency>
         <!-- Redis Client (Lettuce pour async) -->
         <dependency>
             <groupId>io.lettuce</groupId>
             <artifactId>lettuce-core</artifactId>
-            <version>6.4.0.RELEASE</version>
         </dependency>
         <dependency>
             <groupId>org.rocksdb</groupId>
             <artifactId>rocksdbjni</artifactId>
-            <version>10.0.1</version>  <!-- ou la version la plus récente -->
+        </dependency>
+        <dependency>
+            <groupId>ma.s2m</groupId>
+            <artifactId>fraudmanager-domain</artifactId>
         </dependency>
 
         <!-- JSON Serialization (pour transactions) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.18.1</version>
         </dependency>
         <!-- Kryo Serialization (pour Redis) -->
         <dependency>
             <groupId>com.esotericsoftware</groupId>
             <artifactId>kryo</artifactId>
-            <version>5.6.0</version>
         </dependency>
         <!-- FST Serialization -->
         <dependency>
             <groupId>de.ruedigermoeller</groupId>
             <artifactId>fst</artifactId>
-            <version>2.57</version>
         </dependency>
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-            <version>2.0.16</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.8</version>
         </dependency>
         <!-- Resilience (retries) -->
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-retry</artifactId>
-            <version>2.2.0</version>
         </dependency>
         <!-- Tests (optionnel) -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>5.11.3</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>ma.medtech</groupId>
             <artifactId>drool-builder</artifactId>
-            <version>3.5.0-FLINKLESS-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>serializer</artifactId>
-            <version>1.0.0-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>fraudmanager-storage</artifactId>
-            <version>1.2.0-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>fraudmanager-commons</artifactId>
-            <version>1.0.0-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>ma.s2m</groupId>
             <artifactId>config-repository</artifactId>
-            <version>1.0.1-RELEASE</version>
         </dependency>
         <dependency>
             <groupId>org.eclipse.store</groupId>
             <artifactId>storage-embedded</artifactId>
-            <version>2.0.0</version>
         </dependency>
         <dependency>
             <groupId>org.eclipse.store</groupId>
             <artifactId>storage-embedded-configuration</artifactId>
-            <version>2.0.0</version>
         </dependency>
         <!-- Micrometer core + Prometheus registry -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
-            <version>1.13.2</version>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
-            <version>1.13.2</version>
         </dependency>
     </dependencies>
 
